@@ -66,9 +66,10 @@ class DataReader:
                 cur_sentence.append((within_idx, word, pos_tag, head))
 
                 if word not in self.words_dict:
-                    self.words_dict[word] = embedding(word, 'word')
+                    self.words_dict[word] = embedding('word')
                 if pos_tag not in self.tags_dict:
-                    self.tags_dict[pos_tag] = embedding(pos_tag, 'tag')
+                    self.tags_dict[pos_tag] = embedding('tag')
+
 
 
     def get_num_sentences(self):
@@ -76,7 +77,7 @@ class DataReader:
         return len(self.sentences)
 
 
-class Dataset(Dataset):
+class DependencyDataset(Dataset):
     """ Holds version of our data as a PyTorch's Dataset object. """
 
     def __init__(self, file_path: str, padding=True):
@@ -100,8 +101,8 @@ class Dataset(Dataset):
         for i in range(len(self.sentences)):
             # Using word, pos tag concat representation
             self.sentences[i] = [(token[0], torch.cat((words_dict[token[1]], tags_dict[token[2]]), 0), token[3]) for token in self.sentences[i]]
-            while len(self.sentences[i]) < self.max_seq_len:
-                self.sentences[i].append(PAD_TOKEN)
+            # while len(self.sentences[i]) < self.max_seq_len:
+            #     self.sentences[i].append(torch.tensor([1]))
 
     def __len__(self):
         return len(self.sentences)
@@ -110,6 +111,10 @@ class Dataset(Dataset):
         return self.sentences[idx]
 
 if __name__ == '__main__':
-    dataset = Dataset("Data/train.labeled")
+    dataset = DependencyDataset("Data/train.labeled")
 
     dataloader = DataLoader(dataset, batch_size=50, shuffle=True, num_workers=2)
+    for i, line in enumerate(dataloader):
+        print(line)
+        if i == 2:
+            break
