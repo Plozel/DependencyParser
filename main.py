@@ -1,4 +1,5 @@
 from torchtext.vocab import Vocab
+import random
 from torch.utils.data.dataset import Dataset, TensorDataset
 from pathlib import Path
 from collections import Counter
@@ -11,11 +12,11 @@ import random
 from torch.utils.data.dataloader import DataLoader
 
 train_path = "Data/train.labeled"
-UNKNOWN_TOKEN = "<unk>"
-PAD_TOKEN = "<pad>"
-ROOT_TOKEN = "<root>"
-WORD_VEC_LEN = 100
-TAG_VEC_LEN = 25
+
+PAD_TOKEN = 0
+ROOT_TOKEN = 0
+WORD_VEC_LEN = 2
+TAG_VEC_LEN = 2
 
 
 def embedding(input_type, em_method='rand'):
@@ -31,9 +32,10 @@ def embedding(input_type, em_method='rand'):
     """
     if em_method == 'rand':
         if input_type == 'word':
-            return torch.rand(WORD_VEC_LEN)
+            return [random.uniform(0, 1) for i in range(WORD_VEC_LEN)]
+
         else:
-            return torch.rand(TAG_VEC_LEN)
+            return [random.uniform(0, 1) for i in range(TAG_VEC_LEN)]
 
 class DataReader:
     """ Read the data from the requested file and hold it's components. """
@@ -71,9 +73,7 @@ class DataReader:
                 if pos_tag not in self.tags_dict:
                     self.tags_dict[pos_tag] = embedding('tag')
                 if (word, pos_tag) not in self.word_tag_dict:
-                    self.word_tag_dict[(word, pos_tag)] = torch.cat((self.words_dict[word], self.tags_dict[pos_tag]), 0)
-
-
+                    self.word_tag_dict[(word, pos_tag)] = self.words_dict[word] + self.tags_dict[pos_tag]
 
     def get_num_sentences(self):
         """ returns the number of sentences in data. """
@@ -99,26 +99,33 @@ class DependencyDataset(Dataset):
         self.pre_processing()
 
     def pre_processing(self):
-        words_dict = self.data_reader.words_dict
-        tags_dict = self.data_reader.tags_dict
+        # words_dict = self.data_reader.words_dict
+        # tags_dict = self.data_reader.tags_dict
         word_tag_dict = self.data_reader.word_tag_dict
-        for i in range(len(self.sentences)):
-            # Using word, pos tag concat representation
-            self.sentences[i] = [(word_tag_dict[(token[1], token[2])], (token[0], token[3])) for token in self.sentences[i]]
-            # while len(self.sentences[i]) < self.max_seq_len:
-            #     self.sentences[i].append(torch.tensor([1]))
+
+        for i, sentence in enumerate(self.sentences):
+            words_part = [word_tag_dict[(token[1], token[2])] for token in sentence]
+            labels_part = [(int(token[0]), int(token[3])) for token in sentence]
+            while len(words_part) < self.max_seq_len:
+                words_part.append([PAD_TOKEN for j in range(WORD_VEC_LEN+TAG_VEC_LEN)])
+                labels_part.append((PAD_TOKEN, PAD_TOKEN))
+            self.sentences[i] = [torch.tensor(words_part), torch.tensor(labels_part)]
 
     def __len__(self):
         return len(self.sentences)
 
     def __getitem__(self, idx):
-        return self.sentences[idx]
+        word_embed_idx, labels = self.sentences[idx]
+        return word_embed_idx, labels
+
 
 if __name__ == '__main__':
     dataset = DependencyDataset("Data/train.labeled")
 
-    dataloader = DataLoader(dataset, batch_size=50, shuffle=True, num_workers=2)
-    for i, line in enumerate(dataloader):
-        print(line)
-        if i == 2:
+    train_loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
+
+    for i, images in enumerate(train_loader):
+        print(images)
+
+        if i == 0:
             break
