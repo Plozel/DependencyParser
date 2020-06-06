@@ -38,7 +38,7 @@ def get_vocabs(file_path):
     return words_dict, tags_dict
 
 
-class PosDataReader:
+class DataReader:
     """ Read the data from the requested file and hold it's components. """
 
     def __init__(self, file_path, words_dict, tags_dict):
@@ -81,7 +81,7 @@ ROOT_TOKEN = "<root>"
 SPECIAL_TOKENS = [PAD_TOKEN, UNKNOWN_TOKEN]
 
 
-class PosDataset(Dataset):
+class DependencyDataset(Dataset):
     """
     Holds version of our data as a PyTorch's Dataset object.
     """
@@ -95,7 +95,7 @@ class PosDataset(Dataset):
 
         super().__init__()
         self.file_path = file_path
-        self.data_reader = PosDataReader(self.file_path, word_dict, pos_dict)
+        self.data_reader = DataReader(self.file_path, word_dict, pos_dict)
         self.vocab_size = len(self.data_reader.words_dict)
         if word_embeddings:
             self.words_idx_mappings, self.idx_words_mappings, self.words_vectors = word_embeddings
@@ -163,12 +163,67 @@ class PosDataset(Dataset):
             return TensorDataset(all_sentence_word_tag_idx, all_sentence_labels_idx, all_sentence_len)
 
 
+class DnnPosTagger(nn.Module):
+    def __init__(self, word_embeddings, hidden_dim, word_vocab_size, tag_vocab_size):
+        super(DnnPosTagger, self).__init__()
+        emb_dim = 1
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.word_embedding = nn.Embedding(word_vocab_size, 3)
+        self.tag_embedding = nn.Embedding(tag_vocab_size, 2)
+        # self.word_embedding = nn.Embedding.from_pretrained(word_embeddings, freeze=False)
+        self.lstm = nn.LSTM(input_size=emb_dim, hidden_size=hidden_dim, num_layers=2, bidirectional=True,
+                            batch_first=False)
+        self.hidden2tag = nn.Linear(hidden_dim * 2, 10)
+
+    def forward(self, word_idx_tensor):
+        embeds = self.word_embedding(word_idx_tensor.to(self.device))  # [batch_size, seq_length, emb_dim]
+        lstm_out, _ = self.lstm(embeds.view(embeds.shape[1], 1, -1))  # [seq_length, batch_size, 2*hidden_dim]
+        tag_space = self.hidden2tag(lstm_out.view(embeds.shape[1], -1))  # [seq_length, tag_dim]
+        tag_scores = F.log_softmax(tag_space, dim=1)  # [seq_length, tag_dim]
+        return tag_scores
 if __name__ == '__main__':
     path_train = "Data/train.labeled"
 
     word_dict, pos_dict = get_vocabs(path_train)
-    train = PosDataset(word_dict, pos_dict, path_train, padding=True)
-    train_data_loader = DataLoader(train, batch_size=2, shuffle=True)
+    train = DependencyDataset(word_dict, pos_dict, path_train, padding=True)
+    train_data_loader = DataLoader(train, batch_size=1, shuffle=True)
     for i, data in enumerate(train_data_loader):
-        print(data)
-        break
+        print(data[0])
+        exit()
+
+    EPOCHS = 15
+    WORD_EMBEDDING_DIM = 100
+    HIDDEN_DIM = 1000
+    word_vocab_size = len(train.words_idx_mappings)
+    tag_vocab_size = len(train.tags_idx_mappings)
+    word_embeddings = train.get_words_embeddings()
+
+    model = DnnPosTagger(word_embeddings[0].values(), 10, word_vocab_size, tag_vocab_size)
+
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda:0" if use_cuda else "cpu")
+
+    if use_cuda:
+        model.cuda()
+
+    # Define the loss function as the Negative Log Likelihood loss (NLLLoss)
+    loss_function = nn.NLLLoss()
+
+    # We will be using a simple SGD optimizer to minimize the loss function
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    acumulate_grad_steps = 50  # This is the actual batch_size, while we officially use batch_size=1
+
+    # Training start
+    print("Training Started")
+    accuracy_list = []
+    loss_list = []
+    epochs = EPOCHS
+    for epoch in range(epochs):
+        acc = 0  # to keep track of accuracy
+        printable_loss = 0  # To keep track of the loss value
+        i = 0
+        for batch_idx, input_data in enumerate(train_data_loader):
+            i += 1
+            words_idx_tensor, pos_idx_tensor, sentence_length = input_data
+
+            tag_scores = model(words_idx_tensor)
