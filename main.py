@@ -47,6 +47,7 @@ class DataReader:
         self.file_path = file_path
         self.words_dict = {}
         self.tags_dict = {}
+        self.word_tag_dict = {}
         self.sentences = []
         self.__readData__()
 
@@ -69,6 +70,8 @@ class DataReader:
                     self.words_dict[word] = embedding('word')
                 if pos_tag not in self.tags_dict:
                     self.tags_dict[pos_tag] = embedding('tag')
+                if (word, pos_tag) not in self.word_tag_dict:
+                    self.word_tag_dict[(word, pos_tag)] = torch.cat((self.words_dict[word], self.tags_dict[pos_tag]), 0)
 
 
 
@@ -98,9 +101,10 @@ class DependencyDataset(Dataset):
     def pre_processing(self):
         words_dict = self.data_reader.words_dict
         tags_dict = self.data_reader.tags_dict
+        word_tag_dict = self.data_reader.word_tag_dict
         for i in range(len(self.sentences)):
             # Using word, pos tag concat representation
-            self.sentences[i] = [(token[0], torch.cat((words_dict[token[1]], tags_dict[token[2]]), 0), token[3]) for token in self.sentences[i]]
+            self.sentences[i] = [(word_tag_dict[(token[1], token[2])], (token[0], token[3])) for token in self.sentences[i]]
             # while len(self.sentences[i]) < self.max_seq_len:
             #     self.sentences[i].append(torch.tensor([1]))
 
