@@ -57,7 +57,6 @@ class DataReader:
         """ main reader function. """
 
         cur_sentence = []
-
         with open(self.file_path, 'r') as f:
             for line in f:
                 split_line = line.split('\t')
@@ -68,6 +67,7 @@ class DataReader:
                 within_idx, word, pos_tag, head = (split_line[0], split_line[1], split_line[3], split_line[6])
                 cur_sentence.append((within_idx, word, pos_tag, head))
 
+                # Creating dictionaries for identification
                 if word not in self.words_dict:
                     self.words_dict[word] = embedding('word')
                 if pos_tag not in self.tags_dict:
@@ -106,9 +106,12 @@ class DependencyDataset(Dataset):
         for i, sentence in enumerate(self.sentences):
             words_part = [word_tag_dict[(token[1], token[2])] for token in sentence]
             labels_part = [(int(token[0]), int(token[3])) for token in sentence]
+
+            # Padding:
             while len(words_part) < self.max_seq_len:
                 words_part.append([PAD_TOKEN for j in range(WORD_VEC_LEN+TAG_VEC_LEN)])
                 labels_part.append((PAD_TOKEN, PAD_TOKEN))
+
             self.sentences[i] = [torch.tensor(words_part), torch.tensor(labels_part)]
 
     def __len__(self):
@@ -121,7 +124,6 @@ class DependencyDataset(Dataset):
 
 if __name__ == '__main__':
     dataset = DependencyDataset("Data/train.labeled")
-
     train_loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
 
     for i, images in enumerate(train_loader):
