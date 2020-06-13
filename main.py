@@ -17,6 +17,7 @@ def get_vocabs(file_path):
     Extract vocabs from given data sets. Return a words_dict and tags_dict.
     Args:
         file_path: a path to the requested file # TODO: should use a paths list
+        #TODO
 
     Returns:
         words_dict, tags_dict: a dictionary - keys:words\tags, items: counts of appearances.
@@ -97,6 +98,7 @@ class DependencyDataset(Dataset):
         self.file_path = file_path
         self.data_reader = DataReader(self.file_path, word_dict, pos_dict)
         self.vocab_size = len(self.data_reader.words_dict)
+
         if word_embeddings:
             self.words_idx_mappings, self.idx_words_mappings, self.words_vectors = word_embeddings
         else:
@@ -104,11 +106,9 @@ class DependencyDataset(Dataset):
                 self.data_reader.words_dict)
             self.tags_idx_mappings, self.idx_tags_mappings, self.tags_vectors = self.init_tag_embeddings(
                 self.data_reader.tags_dict)
-        # self.labels_idx_mappings, self.idx_labels_mappings = self.init_labels_vocab(self.data_reader.tags_dict)
 
         self.pad_idx = self.words_idx_mappings.get(PAD_TOKEN)
         self.unknown_idx = self.words_idx_mappings.get(UNKNOWN_TOKEN)
-        # self.word_vector_dim = self.words_vectors.size(-1)
         self.sentence_lens = [len(sentence[0]) for sentence in self.data_reader.sentences]
         self.max_seq_len = max(self.sentence_lens)
         self.sentences_dataset = self.convert_sentences_to_dataset(padding)
@@ -117,8 +117,8 @@ class DependencyDataset(Dataset):
         return len(self.sentences_dataset)
 
     def __getitem__(self, index):
-        word_embed_idx, pos_embed_idx, sentence_len = self.sentences_dataset[index]
-        return word_embed_idx, pos_embed_idx, sentence_len
+        word_embed_idx, pos_embed_idx, label_embed_idx, sentence_len = self.sentences_dataset[index]
+        return word_embed_idx, pos_embed_idx, label_embed_idx, sentence_len
 
     @staticmethod
     def init_word_embeddings(words_dict):
@@ -137,63 +137,76 @@ class DependencyDataset(Dataset):
         return self.tags_idx_mappings, self.idx_tags_mappings, self.tags_vectors
 
     def convert_sentences_to_dataset(self, padding):
-        sentence_word_tag_idx_list = list()
+        sentence_words_idx_list = list()
+        sentence_tags_idx_list = list()
         sentence_labels_idx_list = list()
         sentence_len_list = list()
+
         for sentence_idx, sentence in enumerate(self.data_reader.sentences):
-            words_tags_idx_list = []
+            words_idx_list = []
+            tags_idx_list = []
             labels_idx_list = []
+
             for word_tag, labels in zip(sentence[0], sentence[1]):
-                words_tags_idx_list.append((self.words_idx_mappings.get(word_tag[0]),
-                                            self.tags_idx_mappings.get(word_tag[1])))
+                words_idx_list.append(self.words_idx_mappings.get(word_tag[0]))
+                tags_idx_list.append(self.tags_idx_mappings.get(word_tag[1]))
                 labels_idx_list.append(labels)
-            sentence_len = len(words_tags_idx_list)
+            sentence_len = len(words_idx_list)
+
             if padding:
-                while len(words_tags_idx_list) < self.max_seq_len:
-                    words_tags_idx_list.append((self.words_idx_mappings.get(PAD_TOKEN), self.words_idx_mappings.get(PAD_TOKEN)))
-                    labels_idx_list.append((self.words_idx_mappings.get(PAD_TOKEN), self.words_idx_mappings.get(PAD_TOKEN)))
-            sentence_word_tag_idx_list.append(words_tags_idx_list)
+                while len(words_idx_list) < self.max_seq_len:
+                    words_idx_list.append(self.pad_idx)
+                    tags_idx_list.append(self.pad_idx)
+                    labels_idx_list.append((self.pad_idx, self.pad_idx))
+            sentence_words_idx_list.append(words_idx_list)
+            sentence_tags_idx_list.append(tags_idx_list)
             sentence_labels_idx_list.append(labels_idx_list)
             sentence_len_list.append(sentence_len)
 
         if padding:
-            all_sentence_word_tag_idx = torch.tensor(sentence_word_tag_idx_list, dtype=torch.long)
+            all_sentence_words_idx = torch.tensor(sentence_words_idx_list, dtype=torch.long)
+            all_sentence_tags_idx = torch.tensor(sentence_tags_idx_list, dtype=torch.long)
             all_sentence_labels_idx = torch.tensor(sentence_labels_idx_list, dtype=torch.long)
             all_sentence_len = torch.tensor(sentence_len_list, dtype=torch.long, requires_grad=False)
-            return TensorDataset(all_sentence_word_tag_idx, all_sentence_labels_idx, all_sentence_len)
+            return TensorDataset(all_sentence_words_idx, all_sentence_tags_idx, all_sentence_labels_idx, all_sentence_len)
 
 
 class DnnPosTagger(nn.Module):
     def __init__(self, word_embeddings, hidden_dim, word_vocab_size, tag_vocab_size):
         super(DnnPosTagger, self).__init__()
-        emb_dim = 1
+        emb_dim = 2
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.word_embedding = nn.Embedding(word_vocab_size, 3)
-        self.tag_embedding = nn.Embedding(tag_vocab_size, 2)
-        # self.word_embedding = nn.Embedding.from_pretrained(word_embeddings, freeze=False)
+        self.word_embedding = nn.Embedding(word_vocab_size, 1)
+        self.tag_embedding = nn.Embedding(tag_vocab_size, 1)
         self.lstm = nn.LSTM(input_size=emb_dim, hidden_size=hidden_dim, num_layers=2, bidirectional=True,
                             batch_first=False)
         self.hidden2tag = nn.Linear(hidden_dim * 2, 10)
 
-    def forward(self, word_idx_tensor):
-        embeds = self.word_embedding(word_idx_tensor.to(self.device))  # [batch_size, seq_length, emb_dim]
-        lstm_out, _ = self.lstm(embeds.view(embeds.shape[1], 1, -1))  # [seq_length, batch_size, 2*hidden_dim]
-        tag_space = self.hidden2tag(lstm_out.view(embeds.shape[1], -1))  # [seq_length, tag_dim]
-        tag_scores = F.log_softmax(tag_space, dim=1)  # [seq_length, tag_dim]
-        return tag_scores
-if __name__ == '__main__':
-    path_train = "Data/train.labeled"
+    def forward(self, words_idx_tensor, tags_idx_tensor):
+        words_embedded = self.word_embedding(words_idx_tensor.to(self.device))  # [batch_size, seq_length, emb_dim]
+        tags_embedded = self.tag_embedding(tags_idx_tensor.to(self.device))  # [batch_size, seq_length, emb_dim]
+        embeds = torch.cat([words_embedded, tags_embedded], 2)
+        lstm_out, _ = self.lstm(embeds.view(embeds.shape[1], embeds.shape[0], -1))  # [seq_length, batch_size, 2*hidden_dim]
+        lstm_out_flat = lstm_out.view(embeds.shape[1]*embeds.shape[0], -1)
+        labels_space = self.hidden2tag(lstm_out_flat)
+        labels_scores = F.log_softmax(labels_space, dim=1)
+        return labels_scores
 
-    word_dict, pos_dict = get_vocabs(path_train)
-    train = DependencyDataset(word_dict, pos_dict, path_train, padding=True)
-    train_data_loader = DataLoader(train, batch_size=1, shuffle=True)
-    for i, data in enumerate(train_data_loader):
-        print(data[0])
-        exit()
+
+if __name__ == '__main__':
 
     EPOCHS = 15
     WORD_EMBEDDING_DIM = 100
     HIDDEN_DIM = 1000
+    BATCH_SIZE = 2
+
+    path_train = "Data/train_short.labeled"
+
+    word_dict, pos_dict = get_vocabs(path_train)
+    train = DependencyDataset(word_dict, pos_dict, path_train, padding=True)
+    train_data_loader = DataLoader(train, batch_size=3, shuffle=True, num_workers=0)
+
+
     word_vocab_size = len(train.words_idx_mappings)
     tag_vocab_size = len(train.tags_idx_mappings)
     word_embeddings = train.get_words_embeddings()
@@ -206,10 +219,7 @@ if __name__ == '__main__':
     if use_cuda:
         model.cuda()
 
-    # Define the loss function as the Negative Log Likelihood loss (NLLLoss)
     loss_function = nn.NLLLoss()
-
-    # We will be using a simple SGD optimizer to minimize the loss function
     optimizer = optim.Adam(model.parameters(), lr=0.01)
     acumulate_grad_steps = 50  # This is the actual batch_size, while we officially use batch_size=1
 
@@ -224,6 +234,6 @@ if __name__ == '__main__':
         i = 0
         for batch_idx, input_data in enumerate(train_data_loader):
             i += 1
-            words_idx_tensor, pos_idx_tensor, sentence_length = input_data
+            words_idx_tensor, pos_idx_tensor, labels_idx_tensor, sentence_length = input_data
 
-            tag_scores = model(words_idx_tensor)
+            labels_scores = model(words_idx_tensor, pos_idx_tensor)
