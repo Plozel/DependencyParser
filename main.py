@@ -8,6 +8,7 @@ from collections import defaultdict
 from torchtext.vocab import Vocab
 from torch.utils.data.dataset import Dataset, TensorDataset
 from collections import Counter
+from chu_liu_edmonds import decode_mst
 import time
 
 
@@ -18,10 +19,10 @@ def generate_batch(batch):
     tag = [entry[1] for entry in batch]
     offsets = [0] + [len(entry) for entry in text]
     offsets = torch.tensor(offsets[:-1]).cumsum(dim=0)
-    print(offsets)
     text = torch.cat(text)
     tag = torch.cat(tag)
     return text, tag, label, offsets
+
 
 def get_vocabs(file_path):
     """
@@ -97,6 +98,7 @@ class DependencyDataset(Dataset):
     """
     Holds version of our data as a PyTorch's Dataset object.
     """
+
     def __init__(self, words_dict, tags_dict, file_path, padding=False, word_embeddings=None):
         """
         Args:
@@ -179,53 +181,69 @@ class DependencyDataset(Dataset):
             all_sentence_tags_idx = torch.tensor(sentence_tags_idx_list, dtype=torch.long)
             all_sentence_labels_idx = torch.tensor(sentence_labels_idx_list, dtype=torch.long)
             all_sentence_len = torch.tensor(sentence_len_list, dtype=torch.long, requires_grad=False)
-            return TensorDataset(all_sentence_words_idx, all_sentence_tags_idx, all_sentence_labels_idx, all_sentence_len)
-        else:
-            return TensorDataset(torch.tensor(sentence_words_idx_list), torch.tensor(sentence_tags_idx_list), torch.tensor(sentence_labels_idx_list), torch.tensor(sentence_len_list))
+            return TensorDataset(all_sentence_words_idx, all_sentence_tags_idx, all_sentence_labels_idx,
+                                 all_sentence_len)
+        else:  # TODO: What should we do in that situation
+            return TensorDataset(torch.tensor(sentence_words_idx_list), torch.tensor(sentence_tags_idx_list),
+                                 torch.tensor(sentence_labels_idx_list), torch.tensor(sentence_len_list))
 
 
-
-
-class DnnPosTagger(nn.Module):
-    def __init__(self, word_embeddings, hidden_dim, word_vocab_size, tag_vocab_size):
-        super(DnnPosTagger, self).__init__()
-        emb_dim = 2
+class DependencyParser(nn.Module):
+    def __init__(self, word_emb_dim, tag_emb_dim, hidden_dim, word_vocab_size, tag_vocab_size):
+        super(DependencyParser, self).__init__()
+        emb_dim = word_emb_dim + tag_emb_dim
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.word_embedding = nn.Embedding(word_vocab_size, 1)
-        self.tag_embedding = nn.Embedding(tag_vocab_size, 1)
-        self.lstm = nn.LSTM(input_size=emb_dim, hidden_size=hidden_dim, num_layers=2, bidirectional=True,
-                            batch_first=False)
-        self.hidden2tag = nn.Linear(hidden_dim * 2, 18)
+        self.word_embedding = nn.Embedding(word_vocab_size, word_emb_dim)
+        self.tag_embedding = nn.Embedding(tag_vocab_size, tag_emb_dim)
+        self.encoder = nn.LSTM(input_size=emb_dim, hidden_size=emb_dim, num_layers=2, bidirectional=True,
+                               batch_first=False)
+        self.fc1 = nn.Linear(emb_dim * 4, 1)
+        self.activate = nn.Tanh()
 
     def forward(self, words_idx_tensor, tags_idx_tensor, max_length):
-        words_embedded = self.word_embedding(words_idx_tensor[:max_length].to(self.device))  # [batch_size, seq_length, emb_dim]
-        tags_embedded = self.tag_embedding(tags_idx_tensor[:max_length].to(self.device))  # [batch_size, seq_length, emb_dim]
+        words_embedded = self.word_embedding(
+            words_idx_tensor[:max_length].to(self.device))  # [batch_size, seq_length, emb_dim]
+        tags_embedded = self.tag_embedding(
+            tags_idx_tensor[:max_length].to(self.device))  # [batch_size, seq_length, emb_dim]
         embeds = torch.cat([words_embedded, tags_embedded], 2)
-        lstm_out, _ = self.lstm(embeds.view(embeds.shape[1], embeds.shape[0], -1))  # [seq_length, batch_size, 2*hidden_dim]
-        lstm_out_flat = lstm_out.view(embeds.shape[1]*embeds.shape[0], -1)
-        labels_space = self.hidden2tag(lstm_out_flat)
-        labels_scores = F.log_softmax(labels_space, dim=1)
-        return labels_scores
+        lstm_out, _ = self.encoder(
+            embeds.view(embeds.shape[1], embeds.shape[0], -1))  # [seq_length, batch_size, 2*hidden_dim]
+        # lstm_out_flat = lstm_out.view(embeds.shape[1] * embeds.shape[0], -1)
+        features = []
+        for i in range(max_length):
+            for j in range(max_length):
+                feature = torch.cat([lstm_out[i], lstm_out[j]], 1)
+                features.append(feature)
+        features = torch.stack(features, 0)
+        features = self.fc1(features)
+        features = self.activate(features)
+        # print("dasdsa", features)
+        return features
 
 
 if __name__ == '__main__':
+
     start_time = time.time()
-    EPOCHS = 15
-    WORD_EMBEDDING_DIM = 100
+
+    # hyper_parameters
+    EPOCHS = 1
+    WORD_EMBEDDING_DIM = 3
+    POS_EMBEDDING_DIM = 2
     HIDDEN_DIM = 1000
-    BATCH_SIZE = 2
+    BATCH_SIZE = 3
 
     path_train = "Data/train_short.labeled"
 
+    # Preparing the dataset
     word_dict, pos_dict = get_vocabs(path_train)
     train = DependencyDataset(word_dict, pos_dict, path_train, padding=True)
-    train_data_loader = DataLoader(train, batch_size=3, shuffle=True, num_workers=0)
+    train_data_loader = DataLoader(train, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
 
     word_vocab_size = len(train.words_idx_mappings)
     tag_vocab_size = len(train.tags_idx_mappings)
     word_embeddings = train.get_words_embeddings()
 
-    model = DnnPosTagger(word_embeddings[0].values(), 10, word_vocab_size, tag_vocab_size)
+    model = DependencyParser(WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, 1, word_vocab_size, tag_vocab_size)
 
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda:0" if use_cuda else "cpu")
@@ -244,9 +262,24 @@ if __name__ == '__main__':
     for epoch in range(epochs):
         acc = 0  # to keep track of accuracy
         printable_loss = 0  # To keep track of the loss value
-        i = 0
-        for batch_idx, input_data in enumerate(train_data_loader):
-            i += 1
-            words_idx_tensor, pos_idx_tensor, labels_idx_tensor, sentence_length = input_data
-            labels_scores = model(words_idx_tensor, pos_idx_tensor, max(sentence_length))
 
+        for batch_idx, input_data in enumerate(train_data_loader):
+
+            words_idx_tensor, pos_idx_tensor, labels_idx_tensor, sentence_length = input_data
+            max_length = max(sentence_length)
+
+            batched_edges_weights = model(words_idx_tensor, pos_idx_tensor, max_length)
+
+            # Separating the batches
+            weights = [[] for i in range(BATCH_SIZE)]
+            for batched_weight in batched_edges_weights:
+                for i in range(BATCH_SIZE):
+                    weights[i].append(batched_weight[i].item())
+
+            # Using Chu Liu Edmonds algorithm to infer a parse tree
+            trees = []
+            for i in range(BATCH_SIZE):
+                trees.append(decode_mst(np.array(weights[i]).reshape((max_length, max_length)), sentence_length[i],
+                                        has_labels=False))
+
+            # TODO: add root
