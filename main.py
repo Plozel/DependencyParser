@@ -3,14 +3,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import random
 from torch.utils.data.dataloader import DataLoader
 from collections import defaultdict
 from torchtext.vocab import Vocab
 from torch.utils.data.dataset import Dataset, TensorDataset
-from pathlib import Path
 from collections import Counter
+import time
 
+
+# TODO: try to use collate_fn to use it as a smart batcher.
+def generate_batch(batch):
+    label = [entry[2] for entry in batch]
+    text = [entry[0] for entry in batch]
+    tag = [entry[1] for entry in batch]
+    offsets = [0] + [len(entry) for entry in text]
+    offsets = torch.tensor(offsets[:-1]).cumsum(dim=0)
+    print(offsets)
+    text = torch.cat(text)
+    tag = torch.cat(tag)
+    return text, tag, label, offsets
 
 def get_vocabs(file_path):
     """
@@ -169,6 +180,10 @@ class DependencyDataset(Dataset):
             all_sentence_labels_idx = torch.tensor(sentence_labels_idx_list, dtype=torch.long)
             all_sentence_len = torch.tensor(sentence_len_list, dtype=torch.long, requires_grad=False)
             return TensorDataset(all_sentence_words_idx, all_sentence_tags_idx, all_sentence_labels_idx, all_sentence_len)
+        else:
+            return TensorDataset(torch.tensor(sentence_words_idx_list), torch.tensor(sentence_tags_idx_list), torch.tensor(sentence_labels_idx_list), torch.tensor(sentence_len_list))
+
+
 
 
 class DnnPosTagger(nn.Module):
@@ -180,11 +195,11 @@ class DnnPosTagger(nn.Module):
         self.tag_embedding = nn.Embedding(tag_vocab_size, 1)
         self.lstm = nn.LSTM(input_size=emb_dim, hidden_size=hidden_dim, num_layers=2, bidirectional=True,
                             batch_first=False)
-        self.hidden2tag = nn.Linear(hidden_dim * 2, 10)
+        self.hidden2tag = nn.Linear(hidden_dim * 2, 18)
 
-    def forward(self, words_idx_tensor, tags_idx_tensor):
-        words_embedded = self.word_embedding(words_idx_tensor.to(self.device))  # [batch_size, seq_length, emb_dim]
-        tags_embedded = self.tag_embedding(tags_idx_tensor.to(self.device))  # [batch_size, seq_length, emb_dim]
+    def forward(self, words_idx_tensor, tags_idx_tensor, max_length):
+        words_embedded = self.word_embedding(words_idx_tensor[:max_length].to(self.device))  # [batch_size, seq_length, emb_dim]
+        tags_embedded = self.tag_embedding(tags_idx_tensor[:max_length].to(self.device))  # [batch_size, seq_length, emb_dim]
         embeds = torch.cat([words_embedded, tags_embedded], 2)
         lstm_out, _ = self.lstm(embeds.view(embeds.shape[1], embeds.shape[0], -1))  # [seq_length, batch_size, 2*hidden_dim]
         lstm_out_flat = lstm_out.view(embeds.shape[1]*embeds.shape[0], -1)
@@ -194,7 +209,7 @@ class DnnPosTagger(nn.Module):
 
 
 if __name__ == '__main__':
-
+    start_time = time.time()
     EPOCHS = 15
     WORD_EMBEDDING_DIM = 100
     HIDDEN_DIM = 1000
@@ -205,7 +220,6 @@ if __name__ == '__main__':
     word_dict, pos_dict = get_vocabs(path_train)
     train = DependencyDataset(word_dict, pos_dict, path_train, padding=True)
     train_data_loader = DataLoader(train, batch_size=3, shuffle=True, num_workers=0)
-
 
     word_vocab_size = len(train.words_idx_mappings)
     tag_vocab_size = len(train.tags_idx_mappings)
@@ -219,9 +233,8 @@ if __name__ == '__main__':
     if use_cuda:
         model.cuda()
 
-    loss_function = nn.NLLLoss()
+    loss_function = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.01)
-    acumulate_grad_steps = 50  # This is the actual batch_size, while we officially use batch_size=1
 
     # Training start
     print("Training Started")
@@ -235,5 +248,5 @@ if __name__ == '__main__':
         for batch_idx, input_data in enumerate(train_data_loader):
             i += 1
             words_idx_tensor, pos_idx_tensor, labels_idx_tensor, sentence_length = input_data
+            labels_scores = model(words_idx_tensor, pos_idx_tensor, max(sentence_length))
 
-            labels_scores = model(words_idx_tensor, pos_idx_tensor)
