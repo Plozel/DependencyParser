@@ -23,12 +23,10 @@ def my_cross_entropy(y, x):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     x = x.view(len(y[0]), len(y[0]))
     x = F.log_softmax(x, dim=0)
-
-    y = torch.tensor(y, dtype=torch.long, requires_grad=False).to(device)
+    y = y.to(device)
     _loss = torch.tensor(0, dtype=torch.float).to(device)
-
     for i, header in enumerate(y[0]):
-        _loss = _loss.add(x[i][header])
+        _loss = _loss.add(x[header][i])
 
     return -1*_loss/len(y[0])
 
@@ -289,13 +287,11 @@ if __name__ == '__main__':
     # Training start
     print("Training Started")
 
-    count = 0
     for epoch in range(EPOCHS):
 
         for batch_idx, input_data in enumerate(train_data_loader):
 
-            count = count + 1
-            print("batch number -----", count)
+            print("batch number -----", batch_idx)
 
             words_idx_tensor, pos_idx_tensor, headers_idx_tensor, sentence_length = input_data
 
@@ -305,6 +301,7 @@ if __name__ == '__main__':
             batched_weights = model(words_idx_tensor, pos_idx_tensor, max_length, sentence_length)
 
             loss = my_cross_entropy(headers_idx_tensor, batched_weights)
+            # loss1 = UDNLLLoss(headers_idx_tensor, batched_weights, sentence_length)
             print(loss)
 
             loss.backward()
@@ -313,9 +310,7 @@ if __name__ == '__main__':
             model.zero_grad()
 
             # Using Chu Liu Edmonds algorithm to infer a parse tree
-
             weights = batched_weights.squeeze(2)
-            print(weights.shape)
             tree = decode_mst(np.array(weights.detach().cpu()), max_length, has_labels=False)
 
             correct = 0
@@ -329,7 +324,7 @@ if __name__ == '__main__':
             print(torch.sum(sentence_length))
             # exit()
             print(correct)
-            break
+
 
     end_time = time.time()
     print("the training took: ", end_time - start_time)
