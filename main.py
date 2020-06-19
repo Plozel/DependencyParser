@@ -19,27 +19,32 @@ SPECIAL_TOKENS = [ROOT_TOKEN, PAD_TOKEN]
 torch.manual_seed(1)
 
 
-def my_cross_entropy(y, x):
+def my_cross_entropy(true_headers, score_matrix, max_len):
+    """
+        A customize CrossEntropy loss used by a dependency parser, based on known headers and a matrix score.
+
+    Args:
+        true_headers (list of int tensors): The true headers for the given batch.
+        score_matrix (float tensor): A matrix score given by our model - represent the header-modifier index pair probabilities.
+        max_len: The maximum sentence length in the batch.
+
+    Returns:
+        Loss score(float tensor).
+
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    x = x.view(len(y[0]), len(y[0]))
-    x = F.log_softmax(x, dim=0)
-    y = y.to(device)
+
+    score_per_batch = []
+    for i in range(len(true_headers)):
+        score_per_batch.append(F.log_softmax(score_matrix[:, i].view(max_len, max_len), dim=0))
+
     _loss = torch.tensor(0, dtype=torch.float).to(device)
-    for i, header in enumerate(y[0]):
-        _loss = _loss.add(x[header][i])
+    for j in range(len(true_headers)):
+        for i, head in enumerate(true_headers[j]):
+            _loss = _loss.add(score_per_batch[j][head][i]/len(true_headers[j]))
+    a = -1*_loss
+    return a
 
-    return -1*_loss/len(y[0])
-
-
-# faster way?
-def UDNLLLoss(true_label, predicted_scores, lengths):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    predicted_scores = F.log_softmax(predicted_scores, dim=0)
-    _loss = torch.tensor(0, dtype=torch.float).to(device)
-
-    for i, lab in enumerate(true_label):
-        _loss = torch.sum(-1.0*predicted_scores[torch.tensor(lab[:lengths[i]]).add(torch.from_numpy(np.arange(lengths[i]))*lengths[i])][:, i]).add(_loss)
-    return _loss / (len(true_label)*len(true_label[0]))
 
 
 class DataReader:
@@ -159,10 +164,13 @@ class DependencyDataset(Dataset):
                     words_idx_list.append(self.pad_idx)
                     pos_idx_list.append(self.pad_idx)
                     headers_idx_list.append(self.pad_idx)
-
-            sentence_words_idx_list.append(torch.tensor(words_idx_list, dtype=torch.long, requires_grad=False))
-            sentence_pos_idx_list.append(torch.tensor(pos_idx_list, dtype=torch.long, requires_grad=False))
-            sentence_headers_idx_list.append(torch.tensor(headers_idx_list, dtype=torch.long, requires_grad=False))
+                sentence_words_idx_list.append(words_idx_list)
+                sentence_pos_idx_list.append(pos_idx_list)
+                sentence_headers_idx_list.append(headers_idx_list)
+            else:
+                sentence_words_idx_list.append(torch.tensor(words_idx_list, dtype=torch.long, requires_grad=False))
+                sentence_pos_idx_list.append(torch.tensor(pos_idx_list, dtype=torch.long, requires_grad=False))
+                sentence_headers_idx_list.append(torch.tensor(headers_idx_list, dtype=torch.long, requires_grad=False))
 
 
         if padding:
@@ -216,11 +224,11 @@ class DependencyParser(nn.Module):
 
     def forward(self, words_idx_tensor, pos_idx_tensor, max_length, lengths):
         torch.manual_seed(1)
-        words_embedded = self.word_embedding(words_idx_tensor.to(self.device))
+        words_embedded = self.word_embedding(words_idx_tensor[:, :max_length].to(self.device))
 
         torch.manual_seed(1)
 
-        tags_embedded = self.tag_embedding(pos_idx_tensor.to(self.device))
+        tags_embedded = self.tag_embedding(pos_idx_tensor[:, :max_length].to(self.device))
         torch.manual_seed(1)
 
         embeds = torch.cat([words_embedded, tags_embedded], 2)
@@ -231,18 +239,18 @@ class DependencyParser(nn.Module):
         lstm_out, _ = self.encoder(embeds)
 
         torch.manual_seed(1)
+        features = []
+        for i in range(max_length):
+            for j in range(max_length):
+                feature = torch.cat([lstm_out[:, i], lstm_out[:, j]], 1)
+                features.append(feature)
+
+        features = torch.stack(features, 0)
 
         # features = []
-        # for i in range(max_length):
-        #     for j in range(max_length):
-        #         feature = torch.cat([lstm_out[0][i], lstm_out[0][j]], 0)
-        #         features.append(feature)
-
-        # features = torch.stack(features, 0)
-
-        features = torch.cat(
-            [lstm_out.view(lstm_out.shape[1], lstm_out.shape[2]).unsqueeze(1).repeat(1, max_length, 1),
-             lstm_out.repeat(max_length, 1, 1)], -1)
+        # features = torch.cat(
+        #     [lstm_out.view(lstm_out.shape[1], lstm_out.shape[2]).unsqueeze(1).repeat(1, max_length, 1),
+        #      lstm_out.repeat(max_length, 1, 1)], -1)
 
         torch.manual_seed(1)
         # features = self.mlp(features)
@@ -251,7 +259,6 @@ class DependencyParser(nn.Module):
         edge_scores = self.tanh(edge_scores)
         torch.manual_seed(1)
         edge_scores = self.fc2(edge_scores)
-
         return edge_scores
 
 
@@ -264,12 +271,12 @@ if __name__ == '__main__':
     WORD_EMBEDDING_DIM = 100
     POS_EMBEDDING_DIM = 25
     HIDDEN_DIM = 125
-    BATCH_SIZE = 1
+    BATCH_SIZE = 3
 
     path_train = "Data/train.labeled"
 
     # Preparing the dataset
-    train = DependencyDataset(path_train, padding=False)
+    train = DependencyDataset(path_train, padding=True)
     train_data_loader = DataLoader(train, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
     word_vocab_size = len(train.data_reader.words_dict)
@@ -294,14 +301,15 @@ if __name__ == '__main__':
             print("batch number -----", batch_idx)
 
             words_idx_tensor, pos_idx_tensor, headers_idx_tensor, sentence_length = input_data
+            headers_idx_tensors = [headers[:sentence_length[i]] for i, headers in enumerate(headers_idx_tensor)]
 
             max_length = max(sentence_length)
 
 
             batched_weights = model(words_idx_tensor, pos_idx_tensor, max_length, sentence_length)
 
-            loss = my_cross_entropy(headers_idx_tensor, batched_weights)
-            # loss1 = UDNLLLoss(headers_idx_tensor, batched_weights, sentence_length)
+            loss = my_cross_entropy(headers_idx_tensors, batched_weights, max_length)
+            # loss = UDNLLLoss(headers_idx_tensor, batched_weights, sentence_length)
             print(loss)
 
             loss.backward()
@@ -310,20 +318,28 @@ if __name__ == '__main__':
             model.zero_grad()
 
             # Using Chu Liu Edmonds algorithm to infer a parse tree
-            weights = batched_weights.squeeze(2)
-            tree = decode_mst(np.array(weights.detach().cpu()), max_length, has_labels=False)
+
+            weights = batched_weights
+
+            # Using Chu Liu Edmonds algorithm to infer a parse tree
+            trees = []
+            for i in range(BATCH_SIZE):
+                trees.append(decode_mst(np.array(weights[:, i].detach().cpu()).reshape((max_length, max_length))[:sentence_length[i], :sentence_length[i]], sentence_length[i],
+                                        has_labels=False)[0])
 
             correct = 0
 
-            for j, header in enumerate(tree):
+            for i in range(BATCH_SIZE):
+                for j, header in enumerate(trees[i]):
 
-                if headers_idx_tensor[0][j] == header:
-                    correct += 1
-            print(tree)
-            print(headers_idx_tensor)
+                    if headers_idx_tensors[i][j] == header:
+
+                        correct += 1
+
+            print("correct:", correct)
             print(torch.sum(sentence_length))
-            # exit()
-            print(correct)
+
+            break
 
 
     end_time = time.time()
