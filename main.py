@@ -13,9 +13,10 @@ import matplotlib.pyplot as plt
 import time
 from tqdm import tqdm
 
+UNKNOWN_TOKEN = "<unk>"
 PAD_TOKEN = "<pad>"
 ROOT_TOKEN = "<root>"
-SPECIAL_TOKENS = [ROOT_TOKEN, PAD_TOKEN]
+SPECIAL_TOKENS = [ROOT_TOKEN, PAD_TOKEN, UNKNOWN_TOKEN]
 
 torch.manual_seed(1)
 
@@ -57,8 +58,8 @@ def get_vocabs(list_of_paths):
          A POS and words indexes dictionaries.
     """
 
-    words_dict = {PAD_TOKEN, ROOT_TOKEN}
-    pos_dict = {PAD_TOKEN, ROOT_TOKEN}
+    words_dict = {PAD_TOKEN, ROOT_TOKEN, UNKNOWN_TOKEN}
+    pos_dict = {PAD_TOKEN, ROOT_TOKEN, UNKNOWN_TOKEN}
     for file_path in list_of_paths:
         with open(file_path) as f:
             for line in f:
@@ -107,6 +108,8 @@ class DataReader:
                 cur_sentence_pos.append(pos_tag)
                 cur_sentence_headers.append(head)
 
+
+
     def get_num_sentences(self):
         """returns num of sentences in data."""
         return len(self.sentences)
@@ -139,6 +142,7 @@ class DependencyDataset(Dataset):
                 self.data_reader.pos_dict)
 
         self.pad_idx = self.words_idx_mappings.get(PAD_TOKEN)
+        self.unknown_idx = self.words_idx_mappings.get(UNKNOWN_TOKEN)
         self.sentence_lens = [len(sentence[0]) for sentence in self.data_reader.sentences]
         self.max_seq_len = max(self.sentence_lens)
         self.sentences_dataset = self.convert_sentences_to_dataset(padding)
@@ -178,9 +182,16 @@ class DependencyDataset(Dataset):
             headers_idx_list = []
 
             for word, pos_tag, header in zip(sentence[0], sentence[1], sentence[2]):
-                words_idx_list.append(self.words_idx_mappings.get(word))
-                pos_idx_list.append(self.pos_idx_mappings.get(pos_tag))
+
                 headers_idx_list.append(header)
+                if word in words_dict:
+                    words_idx_list.append(self.words_idx_mappings.get(word))
+                else:
+                    words_idx_list.append(self.unknown_idx)
+                if pos_tag in pos_dict:
+                    pos_idx_list.append(self.pos_idx_mappings.get(pos_tag))
+                else:
+                    pos_idx_list.append(self.unknown_idx)
 
             if padding:
                 while len(words_idx_list) < self.max_seq_len:
@@ -256,15 +267,7 @@ class DependencyParser(nn.Module):
         torch.manual_seed(1)
 
         lstm_out, _ = self.encoder(embeds)
-# TODO delete this: (...)
-        # torch.manual_seed(1)
-        # features = []
-        # for i in range(max_length):
-        #     for j in range(max_length):
-        #         feature = torch.cat([lstm_out[:, i], lstm_out[:, j]], 1)
-        #         features.append(feature)
-        #
-        # features = torch.stack(features, 0)
+
         features = []
 
         for i in range(lstm_out.shape[0]):
@@ -306,7 +309,7 @@ def get_acc(edge_scores, headers_idx_tensors, batch_size, max_length, sentence_l
             has_labels=False)[0])
 
     for i in range(batch_size):
-        acc += torch.mean(torch.tensor(headers_idx_tensors[i].tolist() == trees[i], dtype=torch.float))
+        acc += torch.mean(torch.tensor(headers_idx_tensors[i].tolist() == trees[i], dtype=torch.float, requires_grad=False))
     return acc
 
 
@@ -321,6 +324,7 @@ def evaluate(model, words_dict, pos_dict, batch_size):
     Returns:
 
     """
+    print("Evaluating Started")
     path_test = "Data/test.labeled"
     test = DependencyDataset(words_dict, pos_dict, path_test, padding=True)
     test_data_loader = DataLoader(test, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
@@ -336,6 +340,7 @@ def evaluate(model, words_dict, pos_dict, batch_size):
             acc += get_acc(batched_scores, headers_idx_tensors, batch_size, max_length, sentence_length)
 
         acc = acc / len(test)
+    print("Evaluating Ended")
     return acc
 
 
@@ -366,22 +371,22 @@ if __name__ == '__main__':
     start_time = time.time()
 
     # hyper_parameters
-    EPOCHS = 2
+    EPOCHS = 200
     WORD_EMBEDDING_DIM = 100
     POS_EMBEDDING_DIM = 25
     HIDDEN_DIM = 125
     BATCH_SIZE = 10
-    LEARNING_RATE = 0.01
+    LEARNING_RATE = 0.007
 
     path_train = "Data/train.labeled"
     path_test = "Data/test.labeled"
-    paths_list = [path_train, path_test]
+    paths_list = [path_train]
 
     words_dict, pos_dict = get_vocabs(paths_list)  # Gets all known vocabularies.
 
     # Preparing the dataset
     train = DependencyDataset(words_dict, pos_dict, path_train, padding=True)
-    train_data_loader = DataLoader(train, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    train_data_loader = DataLoader(train, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
 
 
     word_vocab_size = len(words_dict)
@@ -433,6 +438,7 @@ if __name__ == '__main__':
                                                                                       np.mean(
                                                                                           accuracy_list[-e_interval:]),
                                                                                       test_acc))
+
     print_plots(accuracy_list, loss_list)
     end_time = time.time()
     torch.save(OpTyParser.state_dict(), 'OpTyParser{}.pkl '.format(start_time))
