@@ -19,9 +19,9 @@ SPECIAL_TOKENS = [ROOT_TOKEN, PAD_TOKEN]
 torch.manual_seed(1)
 
 
-def my_cross_entropy(true_headers, score_matrix, max_len):
+def OpTyNLLLOSS(true_headers, score_matrix, max_len):
     """
-        A customize CrossEntropy loss used by a dependency parser, based on known headers and a matrix score.
+        A customize NLLLOSS loss used by a dependency parser, based on known headers and a matrix score.
 
     Args:
         true_headers (list of int tensors): The true headers for the given batch.
@@ -237,21 +237,23 @@ class DependencyParser(nn.Module):
 
         # lstm_out, _ = self.encoder(embeds.view(embeds.shape[1], embeds.shape[0], -1))
         lstm_out, _ = self.encoder(embeds)
-
-        torch.manual_seed(1)
-        features = []
-        for i in range(max_length):
-            for j in range(max_length):
-                feature = torch.cat([lstm_out[:, i], lstm_out[:, j]], 1)
-                features.append(feature)
-
-        features = torch.stack(features, 0)
-
+# TODO delete this: (...)
+        # torch.manual_seed(1)
         # features = []
-        # features = torch.cat(
-        #     [lstm_out.view(lstm_out.shape[1], lstm_out.shape[2]).unsqueeze(1).repeat(1, max_length, 1),
-        #      lstm_out.repeat(max_length, 1, 1)], -1)
+        # for i in range(max_length):
+        #     for j in range(max_length):
+        #         feature = torch.cat([lstm_out[:, i], lstm_out[:, j]], 1)
+        #         features.append(feature)
+        #
+        # features = torch.stack(features, 0)
+        features = []
 
+        for i in range(lstm_out.shape[0]):
+            features.append(torch.cat(
+                [lstm_out[i].unsqueeze(1).repeat(1, max_length, 1),
+                 lstm_out[i].repeat(max_length, 1, 1)], -1).unsqueeze(1))
+
+        features = torch.cat(features, 1)
         torch.manual_seed(1)
         # features = self.mlp(features)
         edge_scores = self.fc1(features)
@@ -271,7 +273,7 @@ if __name__ == '__main__':
     WORD_EMBEDDING_DIM = 100
     POS_EMBEDDING_DIM = 25
     HIDDEN_DIM = 125
-    BATCH_SIZE = 3
+    BATCH_SIZE = 10
 
     path_train = "Data/train.labeled"
 
@@ -308,7 +310,7 @@ if __name__ == '__main__':
 
             batched_weights = model(words_idx_tensor, pos_idx_tensor, max_length, sentence_length)
 
-            loss = my_cross_entropy(headers_idx_tensors, batched_weights, max_length)
+            loss = OpTyNLLLOSS(headers_idx_tensors, batched_weights, max_length)
             # loss = UDNLLLoss(headers_idx_tensor, batched_weights, sentence_length)
             print(loss)
 
@@ -338,7 +340,6 @@ if __name__ == '__main__':
 
             print("correct:", correct)
             print(torch.sum(sentence_length))
-
             break
 
 
