@@ -9,9 +9,10 @@ from torchtext.vocab import Vocab
 from torch.utils.data.dataset import Dataset, TensorDataset
 from collections import Counter
 from chu_liu_edmonds import decode_mst
+import matplotlib.pyplot as plt
 import time
+from tqdm import tqdm
 
-UNKNOWN_TOKEN = "<unk>"
 PAD_TOKEN = "<pad>"
 ROOT_TOKEN = "<root>"
 SPECIAL_TOKENS = [ROOT_TOKEN, PAD_TOKEN]
@@ -34,7 +35,7 @@ def OpTyNLLLOSS(true_headers, score_matrix, max_len):
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    score_per_batch = []
+    score_per_batch = [] # split the score matrix by batches.
     for i in range(len(true_headers)):
         score_per_batch.append(F.log_softmax(score_matrix[:, i].view(max_len, max_len), dim=0))
 
@@ -42,23 +43,47 @@ def OpTyNLLLOSS(true_headers, score_matrix, max_len):
     for j in range(len(true_headers)):
         for i, head in enumerate(true_headers[j]):
             _loss = _loss.add(score_per_batch[j][head][i]/len(true_headers[j]))
-    a = -1*_loss
-    return a
 
+    return -1*_loss
+
+
+def get_vocabs(list_of_paths):
+    """
+    Creates a POS-tags and words vocabulary dictionaries
+    Args:
+        list_of_paths (list of string): Contains the files' paths from which we retrieve our data.
+
+    Returns:
+         A POS and words indexes dictionaries.
+    """
+
+    words_dict = {PAD_TOKEN, ROOT_TOKEN}
+    pos_dict = {PAD_TOKEN, ROOT_TOKEN}
+    for file_path in list_of_paths:
+        with open(file_path) as f:
+            for line in f:
+                split_line = line.split('\t')
+                if len(split_line) == 1:  # the end of a sentence denotes by \n line.
+                    continue
+                word, pos_tag, head = split_line[1], split_line[3], int(split_line[6])
+                words_dict.add(word)
+                pos_dict.add(pos_tag)
+
+    return words_dict, pos_dict
 
 
 class DataReader:
     """ Read the data from the requested file and hold it's components. """
 
-    def __init__(self, file_path):
+    def __init__(self, word_dict, pos_dict, file_path):
         """
         Args:
             file_path (str): holds the path to the requested file.
             words_dict, tags_dict: a dictionary - keys:words\tags, items: counts of appearances.
         """
         self.file_path = file_path
-        self.words_dict = {PAD_TOKEN, ROOT_TOKEN}
-        self.pos_dict = {PAD_TOKEN, ROOT_TOKEN}
+        self.words_dict = word_dict
+        self.pos_dict = pos_dict
         self.sentences = []
         self.__readData__()
 
@@ -81,8 +106,6 @@ class DataReader:
                 cur_sentence_word.append(word)
                 cur_sentence_pos.append(pos_tag)
                 cur_sentence_headers.append(head)
-                self.words_dict.add(word)
-                self.pos_dict.add(pos_tag)
 
     def get_num_sentences(self):
         """returns num of sentences in data."""
@@ -94,7 +117,7 @@ class DependencyDataset(Dataset):
     Holds version of our data as a PyTorch's Dataset object.
     """
 
-    def __init__(self, file_path, padding=False, word_embeddings=None):
+    def __init__(self, word_dict, pos_dict, file_path, padding=False, word_embeddings=None):
         """
         Args:
             file_path (str): The path of the requested file.
@@ -104,7 +127,7 @@ class DependencyDataset(Dataset):
 
         super().__init__()
         self.file_path = file_path
-        self.data_reader = DataReader(self.file_path)
+        self.data_reader = DataReader(word_dict, pos_dict, self.file_path)
         self.vocab_size = len(self.data_reader.words_dict)
 
         if word_embeddings:
@@ -172,7 +195,6 @@ class DependencyDataset(Dataset):
                 sentence_pos_idx_list.append(torch.tensor(pos_idx_list, dtype=torch.long, requires_grad=False))
                 sentence_headers_idx_list.append(torch.tensor(headers_idx_list, dtype=torch.long, requires_grad=False))
 
-
         if padding:
             all_sentence_words_idx = torch.tensor(sentence_words_idx_list, dtype=torch.long, requires_grad=False)
             all_sentence_tags_idx = torch.tensor(sentence_pos_idx_list, dtype=torch.long, requires_grad=False)
@@ -187,14 +209,12 @@ class DependencyDataset(Dataset):
                                                                          sentence_len_list))}
 
 
-
-
 class DependencyParser(nn.Module):
-    def __init__(self, word_emb_dim, tag_emb_dim, word_vocab_size, tag_vocab_size):
+    def __init__(self, word_emb_dim, pos_emb_dim, hidden_dim, word_vocab_size, tag_vocab_size):
         super(DependencyParser, self).__init__()
         torch.manual_seed(1)
 
-        self.emb_dim = word_emb_dim + tag_emb_dim
+        self.emb_dim = word_emb_dim + pos_emb_dim
         torch.manual_seed(1)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -204,9 +224,9 @@ class DependencyParser(nn.Module):
 
         torch.manual_seed(1)
 
-        self.tag_embedding = nn.Embedding(tag_vocab_size, tag_emb_dim)
+        self.tag_embedding = nn.Embedding(tag_vocab_size, pos_emb_dim)
         torch.manual_seed(1)
-        self.encoder = nn.LSTM(input_size=self.emb_dim, hidden_size=self.emb_dim, num_layers=2, bidirectional=True,
+        self.encoder = nn.LSTM(input_size=self.emb_dim, hidden_size=hidden_dim, num_layers=2, bidirectional=True,
                                batch_first=True)
         torch.manual_seed(1)
         self.mlp = nn.Sequential(
@@ -235,7 +255,6 @@ class DependencyParser(nn.Module):
 
         torch.manual_seed(1)
 
-        # lstm_out, _ = self.encoder(embeds.view(embeds.shape[1], embeds.shape[0], -1))
         lstm_out, _ = self.encoder(embeds)
 # TODO delete this: (...)
         # torch.manual_seed(1)
@@ -264,84 +283,157 @@ class DependencyParser(nn.Module):
         return edge_scores
 
 
+def get_acc(edge_scores, headers_idx_tensors, batch_size, max_length, sentence_length):
+    """
+    Uses Chu Liu Edmonds algorithm to infer a parse tree and calculates the current batch accuracy.
+
+    Args:
+        edge_scores:
+        headers_idx_tensors:
+        batch_size:
+        max_length:
+        sentence_length:
+
+    Returns:
+
+    """
+    acc = 0
+    trees = []
+    for i in range(batch_size):
+        trees.append(decode_mst(
+            np.array(edge_scores[:, i].detach().cpu()).reshape((max_length, max_length))[:sentence_length[i],
+            :sentence_length[i]], sentence_length[i],
+            has_labels=False)[0])
+
+    for i in range(batch_size):
+        acc += torch.mean(torch.tensor(headers_idx_tensors[i].tolist() == trees[i], dtype=torch.float))
+    return acc
+
+
+def evaluate(model, words_dict, pos_dict, batch_size):
+    """
+
+    Args:
+        words_dict:
+        pos_dict:
+        batch_size:
+
+    Returns:
+
+    """
+    path_test = "Data/test.labeled"
+    test = DependencyDataset(words_dict, pos_dict, path_test, padding=True)
+    test_data_loader = DataLoader(test, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+
+    acc = 0
+    with torch.no_grad():
+        for batch_idx, input_data in enumerate(test_data_loader):
+            words_idx_tensor, pos_idx_tensor, headers_idx_tensor, sentence_length = input_data
+            headers_idx_tensors = [headers[:sentence_length[i]] for i, headers in enumerate(headers_idx_tensor)]
+            max_length = max(sentence_length)
+            batched_scores = model(words_idx_tensor, pos_idx_tensor, max_length, sentence_length)
+
+            acc += get_acc(batched_scores, headers_idx_tensors, batch_size, max_length, sentence_length)
+
+        acc = acc / len(test)
+    return acc
+
+
+def print_plots(accuracy_list, loss_list):
+    """
+    Prints two plot that describes our processes of learning through an NLLL loss function and the accuracy measure.
+    Args:
+        accuracy_list:
+        loss_list:
+
+    Returns:
+
+    """
+    plt.plot(accuracy_list, c="red", label="Accuracy")
+    plt.xlabel("Epochs")
+    plt.ylabel("Value")
+    plt.legend()
+    plt.show()
+
+    plt.plot(loss_list, c="blue", label="Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Value")
+    plt.legend()
+    plt.show()
+
 if __name__ == '__main__':
 
     start_time = time.time()
 
     # hyper_parameters
-    EPOCHS = 1000
+    EPOCHS = 2
     WORD_EMBEDDING_DIM = 100
     POS_EMBEDDING_DIM = 25
     HIDDEN_DIM = 125
     BATCH_SIZE = 10
+    LEARNING_RATE = 0.01
 
     path_train = "Data/train.labeled"
+    path_test = "Data/test.labeled"
+    paths_list = [path_train, path_test]
+
+    words_dict, pos_dict = get_vocabs(paths_list)  # Gets all known vocabularies.
 
     # Preparing the dataset
-    train = DependencyDataset(path_train, padding=True)
+    train = DependencyDataset(words_dict, pos_dict, path_train, padding=True)
     train_data_loader = DataLoader(train, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-    word_vocab_size = len(train.data_reader.words_dict)
-    pos_vocab_size = len(train.data_reader.pos_dict)
 
-    model = DependencyParser(WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, word_vocab_size, pos_vocab_size)
+    word_vocab_size = len(words_dict)
+    pos_vocab_size = len(pos_dict)
+
+    OpTyParser = DependencyParser(WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM, word_vocab_size, pos_vocab_size)
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda:0" if use_cuda else "cpu")
 
     if use_cuda:
-        model.cuda()
+        OpTyParser.cuda()
 
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    optimizer = optim.Adam(OpTyParser.parameters(), lr=LEARNING_RATE)
 
     # Training start
     print("Training Started")
-
+    accuracy_list = []
+    loss_list = []
     for epoch in range(EPOCHS):
-
-        for batch_idx, input_data in enumerate(train_data_loader):
-
-            print("batch number -----", batch_idx)
+        acc = 0  # to keep track of accuracy
+        printable_loss = 0  # To keep track of the loss value
+        i = 0
+        for input_data in tqdm(train_data_loader):
+            i += 1
 
             words_idx_tensor, pos_idx_tensor, headers_idx_tensor, sentence_length = input_data
             headers_idx_tensors = [headers[:sentence_length[i]] for i, headers in enumerate(headers_idx_tensor)]
-
             max_length = max(sentence_length)
 
-
-            batched_weights = model(words_idx_tensor, pos_idx_tensor, max_length, sentence_length)
+            batched_weights = OpTyParser(words_idx_tensor, pos_idx_tensor, max_length, sentence_length)
 
             loss = OpTyNLLLOSS(headers_idx_tensors, batched_weights, max_length)
-            # loss = UDNLLLoss(headers_idx_tensor, batched_weights, sentence_length)
-            print(loss)
-
             loss.backward()
-
             optimizer.step()
-            model.zero_grad()
+            OpTyParser.zero_grad()
 
-            # Using Chu Liu Edmonds algorithm to infer a parse tree
+            printable_loss += loss.item()
 
-            weights = batched_weights
+            acc += get_acc(batched_weights, headers_idx_tensors, BATCH_SIZE, max_length, sentence_length)
 
-            # Using Chu Liu Edmonds algorithm to infer a parse tree
-            trees = []
-            for i in range(BATCH_SIZE):
-                trees.append(decode_mst(np.array(weights[:, i].detach().cpu()).reshape((max_length, max_length))[:sentence_length[i], :sentence_length[i]], sentence_length[i],
-                                        has_labels=False)[0])
-
-            correct = 0
-
-            for i in range(BATCH_SIZE):
-                for j, header in enumerate(trees[i]):
-
-                    if headers_idx_tensors[i][j] == header:
-
-                        correct += 1
-
-            print("correct:", correct)
-            print(torch.sum(sentence_length))
-            break
-
-
+        printable_loss = printable_loss / len(train)
+        acc = acc/len(train)
+        accuracy_list.append(float(acc))
+        loss_list.append(float(printable_loss))
+        test_acc = evaluate(OpTyParser, words_dict, pos_dict, BATCH_SIZE)
+        e_interval = i
+        print("Epoch {} Completed,\tLoss {}\tAccuracy: {}\t Test Accuracy: {}".format(epoch + 1,
+                                                                                      np.mean(loss_list[-e_interval:]),
+                                                                                      np.mean(
+                                                                                          accuracy_list[-e_interval:]),
+                                                                                      test_acc))
+    print_plots(accuracy_list, loss_list)
     end_time = time.time()
+    torch.save(OpTyParser.state_dict(), 'OpTyParser{}.pkl '.format(start_time))
     print("the training took: ", end_time - start_time)
