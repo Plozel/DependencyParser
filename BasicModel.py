@@ -24,15 +24,12 @@ torch.manual_seed(1)
 def OpTyNLLLOSS(true_headers, score_matrix, max_len):
     """
         A customize NLLLOSS loss used by a dependency parser, based on known headers and a matrix score.
-
     Args:
         true_headers (list of int tensors): The true headers for the given batch.
         score_matrix (float tensor): A matrix score given by our model - represent the header-modifier index pair probabilities.
         max_len: The maximum sentence length in the batch.
-
     Returns:
         Loss score(float tensor).
-
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -53,7 +50,6 @@ def get_vocabs(list_of_paths):
     Creates a POS-tags and words vocabulary dictionaries
     Args:
         list_of_paths (list of string): Contains the files' paths from which we retrieve our data.
-
     Returns:
          A POS and words indexes dictionaries.
     """
@@ -289,16 +285,13 @@ class DependencyParser(nn.Module):
 def get_acc(edge_scores, headers_idx_tensors, batch_size, max_length, sentence_length):
     """
     Uses Chu Liu Edmonds algorithm to infer a parse tree and calculates the current batch accuracy.
-
     Args:
         edge_scores:
         headers_idx_tensors:
         batch_size:
         max_length:
         sentence_length:
-
     Returns:
-
     """
     acc = 0
     trees = []
@@ -315,14 +308,11 @@ def get_acc(edge_scores, headers_idx_tensors, batch_size, max_length, sentence_l
 
 def evaluate(model, words_dict, pos_dict, batch_size):
     """
-
     Args:
         words_dict:
         pos_dict:
         batch_size:
-
     Returns:
-
     """
     print("Evaluating Started")
     path_test = "Data/test.labeled"
@@ -350,9 +340,7 @@ def print_plots(accuracy_list, loss_list):
     Args:
         accuracy_list:
         loss_list:
-
     Returns:
-
     """
     plt.plot(accuracy_list, c="red", label="Accuracy")
     plt.xlabel("Epochs")
