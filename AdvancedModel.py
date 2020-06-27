@@ -71,7 +71,7 @@ def get_vocabs(list_of_paths):
 
 
 class DataReader:
-    """ Read the data from the requested file and hold it's components. """
+    """ Reads the data from the requested file and hold it's components. """
 
     def __init__(self, word_dict, pos_dict, file_path, competition=False):
         """
@@ -251,6 +251,7 @@ class LSTMEncoder(nn.Module):
         self._mlp_dropout = _mlp_dropout
         self._lstm_dropout = _lstm_dropout
 
+        # TODO: so ugly
         self.weight1 = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
         self.weight1.data.uniform_(-1, 1)
         self.weight2 = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
@@ -361,7 +362,7 @@ def get_acc(edge_scores, headers_idx_tensors, batch_size, max_length, sentence_l
     return acc
 
 
-def evaluate(model, words_dict, pos_dict, batch_size):
+def evaluate(model, words_dict, pos_dict, batch_size, path_test):
     """
     Evaluate our model on a validation set.
     Args:
@@ -369,13 +370,13 @@ def evaluate(model, words_dict, pos_dict, batch_size):
         words_dict: The word vocabulary the model trained with.
         pos_dict: The POS tag vocabulary the model trained with.
         batch_size: The number of sentences in a batch.
+        path_test: The path to the file to evaluate.
     Returns:
         The given model's loss and accuracy gained on the validation set.
     """
     print("Evaluating Started")
 
     model.eval()
-    path_test = "Data/test.labeled"
     test = DependencyDataset(words_dict, pos_dict, path_test, padding=True)
     test_data_loader = DataLoader(test, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
     num_of_sentences = len(test)
@@ -480,6 +481,7 @@ class DependencyParser:
 
         paths_list = [self.path_train]
 
+
         # Prepares the dataset.
         words_dict, pos_dict = get_vocabs(paths_list)  # Gets all known vocabularies.
         train = DependencyDataset(words_dict, pos_dict, self.path_train, padding=True)
@@ -545,7 +547,7 @@ class DependencyParser:
             train_acc_list.append(float(acc))
             train_loss_list.append(float(printable_loss))
             # Runs a validation phase.
-            test_acc, test_loss = evaluate(encoder, words_dict, pos_dict, self.batch_size)
+            test_acc, test_loss = evaluate(encoder, words_dict, pos_dict, self.batch_size, self.path_test)
             test_acc_list.append(test_acc)
             test_loss_list.append(test_loss)
             print("Epoch {} Completed,\tLoss {}\tAccuracy: {}\t Test Accuracy: {}".format(epoch + 1, train_loss_list[-1],
@@ -562,13 +564,12 @@ class DependencyParser:
 
 if __name__ == '__main__':
 
-    path_train = "Data/train.labeled"
-    path_test = "Data/test.labeled"
+    # path_train = "Data/combined_full.labeled"
+    # path_test = "Data/val_clean.txt"
 
-    hyper_parameters_list = [(100, 100, 100, 500, 1, 30, 0.002, path_train, path_test, 0.3, 0.3, 0.3),
-                             (80, 100, 100, 400, 1, 30, 0.002, path_train, path_test, 0.5, 0.3, 0.1),
-                             (80, 100, 100, 400, 1, 40, 0.005, path_train, path_test, 0.3, 0.3, 0.3),
-                             (60, 100, 200, 400, 1, 20, 0.002, path_train, path_test, 0.3, 0.3, 0.3)]
+    hyper_parameters_list = [(100, 100, 100, 500, 1, 30, 0.002, "Data/combined0.labeled", "Data/val0.labeled", 0.3, 0.3, 0.3),
+                             (100, 100, 100, 500, 1, 30, 0.002, "Data/combined1.labeled", "Data/val1.labeled", 0.3, 0.3, 0.3),
+                             (100, 100, 100, 500, 1, 30, 0.002, "Data/combined2.labeled", "Data/val2.labeled", 0.3, 0.3, 0.3)]
 
     for hyper_parameters in hyper_parameters_list:
         EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM, BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, path_train, path_test, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT = hyper_parameters
@@ -580,9 +581,11 @@ if __name__ == '__main__':
         max_test_acc = round(max(test_acc_list).item(), 3)
         epoch_max = np.argmax(test_acc_list)
 
-        # Saves our model hyper parameters settings.
+        # Saves our model hyper parameters settings ina csv file.
         with open('parser_results_info.csv', 'a') as f:
             writer = csv.writer(f)
             writer.writerow([time_id, max_test_acc, epoch_max, EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM,
                              BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT])
+
+        print("Finished training the model, based on the following hyper parameters mix: {}".format(hyper_parameters))
 

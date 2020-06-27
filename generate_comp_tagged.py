@@ -16,11 +16,12 @@ def generate_comp_tagged_file(model_path, target_path):
 
     """
     torch.manual_seed(0)
-    words_dict, pos_dict = AdvancedModel.get_vocabs(trained_on_path_list)
-    comp = AdvancedModel.DependencyDataset(words_dict, pos_dict, path_comp, padding=True, competition=True)
-    comp_data_loader = AdvancedModel.DataLoader(comp, batch_size=1, shuffle=False, num_workers=0)
-
     with torch.no_grad():
+
+        words_dict, pos_dict = AdvancedModel.get_vocabs(trained_on_path_list)
+        comp = AdvancedModel.DependencyDataset(words_dict, pos_dict, path_comp, padding=True, competition=True)
+        comp_data_loader = AdvancedModel.DataLoader(comp, batch_size=1, shuffle=False, num_workers=0)
+
         model = torch.load(model_path)
 
         if torch.cuda.is_available():
@@ -33,16 +34,13 @@ def generate_comp_tagged_file(model_path, target_path):
         for input_data in tqdm(comp_data_loader):
             words_idx_tensor, pos_idx_tensor, headers_idx_tensor, sentence_length = input_data
             max_length = max(sentence_length)
-            score_matrix = model(words_idx_tensor, pos_idx_tensor, max_length)
+            score_matrix = model(words_idx_tensor, pos_idx_tensor, max_length, _evaluate=True)
 
             trees.append(decode_mst(np.array(score_matrix[:, 0].detach().cpu()).reshape((max_length, max_length))
                                     [:sentence_length[0], :sentence_length[0]], sentence_length[0], has_labels=False)[0])
 
         current_tree_idx = 0
         current_word_idx = 1
-
-        # with open(target_path, 'w') as f_labeled:
-        #     pass
 
         with open(path_comp, 'r') as f_unlabeled:
             with open(target_path, 'w') as f_labeled:
@@ -73,10 +71,10 @@ if __name__ == '__main__':
     trained_on_path_list = [path_train, path_test]
     path_comp_m1_labeled = 'comp_m1_203933551.labeled'
     path_comp_m2_labeled = 'comp_m2_203933551.labeled'
-    basic_model_path = 'encoder06_26_2020_14_55_17.pth'
-    advanced_model_path = 'encoder06_26_2020_14_55_17.pth'
+    basic_model_path = 'encoder06_27_2020_03_46_19.pth'
+    advanced_model_path = 'encoder06_27_2020_03_46_19.pth'
 
-    generate_comp_tagged_file(basic_model_path, path_comp_m1_labeled)
+    # generate_comp_tagged_file(basic_model_path, path_comp_m1_labeled)
     generate_comp_tagged_file(advanced_model_path, path_comp_m2_labeled)
 
     print("Evaluate end")
