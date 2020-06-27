@@ -4,17 +4,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data.dataloader import DataLoader
-from collections import defaultdict
 from torchtext.vocab import Vocab
 from torch.utils.data.dataset import Dataset, TensorDataset
 from collections import Counter
 from chu_liu_edmonds import decode_mst
 import matplotlib.pyplot as plt
-import seaborn as sns
-import time
 from datetime import datetime
 from tqdm import tqdm
 from timeit import default_timer as timer
+import csv
+
+torch.manual_seed(0)
 
 UNKNOWN_TOKEN = "<unk>"
 PAD_TOKEN = "<pad>"
@@ -73,12 +73,13 @@ def get_vocabs(list_of_paths):
 class DataReader:
     """ Read the data from the requested file and hold it's components. """
 
-    def __init__(self, word_dict, pos_dict, file_path):
+    def __init__(self, word_dict, pos_dict, file_path, competition=False):
         """
         Args:
             file_path (str): holds the path to the requested file.
             words_dict, tags_dict: a dictionary - keys:words\tags, items: counts of appearances.
         """
+        self.competition = competition
         self.file_path = file_path
         self.words_dict = word_dict
         self.pos_dict = pos_dict
@@ -100,7 +101,10 @@ class DataReader:
                     cur_sentence_pos = [ROOT_TOKEN]
                     cur_sentence_headers = [-1]
                     continue
-                word, pos_tag, head = split_line[1], split_line[3], int(split_line[6])
+                if not self.competition:
+                    word, pos_tag, head = split_line[1], split_line[3], int(split_line[6])
+                else:
+                    word, pos_tag, head = split_line[1], split_line[3], -2
                 cur_sentence_word.append(word)
                 cur_sentence_pos.append(pos_tag)
                 cur_sentence_headers.append(head)
@@ -115,17 +119,21 @@ class DependencyDataset(Dataset):
     Holds version of our data as a PyTorch's Dataset object.
     """
 
-    def __init__(self, word_dict, pos_dict, file_path, padding=False, word_embeddings=None):
+    def __init__(self, word_dict, pos_dict, file_path, padding=False, word_embeddings=None, competition=False):
+
         """
         Args:
-            file_path (str): The path of the requested file.
-            padding (bool): Gets true if padding is required.
-            word_embeddings: A set of words mapping.
+            word_dict:
+            pos_dict:
+            file_path: The path of the requested file.
+            padding: Gets true if padding is required.
+            word_embeddings (str):  A pretrained embedding path.
+            competition (bool):  Gets True if it works on a file without gold headers.
         """
 
         super().__init__()
         self.file_path = file_path
-        self.data_reader = DataReader(word_dict, pos_dict, self.file_path)
+        self.data_reader = DataReader(word_dict, pos_dict, self.file_path, competition)
         self.vocab_size = len(self.data_reader.words_dict)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -217,13 +225,31 @@ class DependencyDataset(Dataset):
 
 
 class LSTMEncoder(nn.Module):
-    def __init__(self, word_emb_dim, pos_emb_dim, hidden_dim, word_vocab_size, tag_vocab_size):
+    """
+    Our model encoder, based on LSTM and Contrast.
+    """
+    def __init__(self, word_emb_dim, pos_emb_dim, hidden_dim, word_vocab_size, tag_vocab_size, _word_tag_dropout, _mlp_dropout, _lstm_dropout):
+        """
+        Args:
+            word_emb_dim: The dimension of the word embedding.
+            pos_emb_dim: The dimension of the POS tag embedding.
+            hidden_dim: The dimension of the LSTM's hidden size
+            word_vocab_size: The number of words in our vocabulary.
+            tag_vocab_size: The number of tags in our vocabulary
+            _word_tag_dropout: The probability to dropout a complete word\ag and replace it with it's matched word\tag.
+            _mlp_dropout: The MLP's neuron dropout probability
+            _lstm_dropout: The LSTM's layer dropout probability
+        """
         super(LSTMEncoder, self).__init__()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.hidden_dim = hidden_dim
         self.emb_dim = word_emb_dim + pos_emb_dim
+
+        self._word_tag_dropout = _word_tag_dropout
+        self._mlp_dropout = _mlp_dropout
+        self._lstm_dropout = _lstm_dropout
 
         self.weight1 = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
         self.weight1.data.uniform_(-1, 1)
@@ -233,23 +259,49 @@ class LSTMEncoder(nn.Module):
         self.weight3.data.uniform_(-1, 1)
         self.weight4 = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
         self.weight4.data.uniform_(-1, 1)
+        self.weight5 = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
+        self.weight5.data.uniform_(-1, 1)
+
+        self.weight_tanh = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
+        self.weight_tanh.data.uniform_(-1, 1)
+        self.weight_relu = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
+        self.weight_relu.data.uniform_(-1, 1)
 
         self.word_embedding = nn.Embedding(word_vocab_size, word_emb_dim)
         self.tag_embedding = nn.Embedding(tag_vocab_size, pos_emb_dim)
-        self.encoder = nn.LSTM(input_size=self.emb_dim, hidden_size=hidden_dim, num_layers=4, bidirectional=True,
-                               batch_first=True)
+        self.encoder = nn.LSTM(input_size=self.emb_dim, hidden_size=hidden_dim, num_layers=5, bidirectional=True,
+                               batch_first=True, dropout=self._lstm_dropout)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.hidden_dim * 4, 100),
-            nn.Tanh(),
+            nn.Dropout(p=self._mlp_dropout),
+            nn.ReLU(),
             nn.Linear(100, 1)
         )
 
-        self.fc1 = nn.Linear(self.emb_dim * 4, 100)
+        self.fc1 = nn.Linear(self.hidden_dim * 4, 100)
+        self.drop_out = nn.Dropout(p=self._mlp_dropout)
+        self.tanh = nn.Tanh()
+        self.fc2 = nn.Linear(100, 1)
+
         self.tanh = nn.Tanh()
         self.relu = nn.ReLU()
 
+    def word_tag_dropout(self, words, postags, p_drop):
+        # can't work with batches
+        p_matrix_word = torch.rand(size=words.shape, device=words.device)
+        p_matrix_pos = torch.rand(size=words.shape, device=words.device)
+        w_dropout_mask = (p_matrix_word > p_drop).long()
+        p_dropout_mask = (p_matrix_pos > p_drop).long()
+        w_dropout_mask_inv = (p_matrix_word < p_drop).long()
+        p_dropout_mask_inv = (p_matrix_pos < p_drop).long()
+
+        return words*w_dropout_mask + postags*w_dropout_mask_inv, postags*p_dropout_mask + p_dropout_mask_inv
+
     def forward(self, words_idx_tensor, pos_idx_tensor, max_length, _evaluate=False):
+
+        if not _evaluate:
+            words_idx_tensor, pos_idx_tensor = self.word_tag_dropout(words_idx_tensor, pos_idx_tensor, self._word_tag_dropout)
 
         words_embedded = self.word_embedding(words_idx_tensor[:, :max_length].to(self.device, non_blocking=True))
         tags_embedded = self.tag_embedding(pos_idx_tensor[:, :max_length].to(self.device, non_blocking=True))
@@ -264,12 +316,18 @@ class LSTMEncoder(nn.Module):
                  lstm_out[i].repeat(max_length, 1, 1)], -1).unsqueeze(1))
 
         features = torch.cat(features, 1)
-        features1 = self.weight1.mul(features)
-        features2 = self.weight2.mul(features*features)
-        features3 = self.weight3.mul(features*features*features)
-        features4 = self.weight4.mul(features*features*features*features)
+        features_x2 = features * features
+        features_x3 = features_x2 * features
+        features_x4 = features_x3 * features
+        features_x5 = features_x4 * features
 
-        features = features1 + features2 + features3+features4
+        features1 = self.weight1.mul(features)
+        features2 = self.weight2.mul(features_x2)
+        features3 = self.weight3.mul(features_x3)
+        features4 = self.weight4.mul(features_x4)
+        features5 = self.weight5.mul(features_x5)
+
+        features = features1 + features2 + features3 + features4 + features5
 
         edge_scores = self.mlp(features)
 
@@ -280,12 +338,15 @@ def get_acc(edge_scores, headers_idx_tensors, batch_size, max_length, sentence_l
     """
     Uses Chu Liu Edmonds algorithm to infer a parse tree and calculates the current batch accuracy.
     Args:
-        edge_scores:
-        headers_idx_tensors:
-        batch_size:
-        max_length:
-        sentence_length:
+        edge_scores: Edge scores matrix, gained our of our chosen model.
+        headers_idx_tensors: The gold headers to compare to.
+        batch_size: The number of sentences in a batch.
+        max_length: The maximum length of a sentence in the batch.
+        sentence_length: List of all the sentences length.
+
     Returns:
+        The summed accuracy of the current batch.
+
     """
     acc = 0
     trees = []
@@ -296,25 +357,30 @@ def get_acc(edge_scores, headers_idx_tensors, batch_size, max_length, sentence_l
             has_labels=False)[0])
 
     for i in range(batch_size):
-        acc += torch.mean(torch.tensor(headers_idx_tensors[i][1:].tolist() == trees[i][1:], dtype=torch.float, requires_grad=False))
+        acc += torch.sum(torch.tensor(headers_idx_tensors[i][1:].tolist() == trees[i][1:], dtype=torch.float, requires_grad=False))
     return acc
 
 
 def evaluate(model, words_dict, pos_dict, batch_size):
     """
+    Evaluate our model on a validation set.
     Args:
-        model:
-        words_dict:
-        pos_dict:
-        batch_size:
+        model: Our trained model.
+        words_dict: The word vocabulary the model trained with.
+        pos_dict: The POS tag vocabulary the model trained with.
+        batch_size: The number of sentences in a batch.
     Returns:
+        The given model's loss and accuracy gained on the validation set.
     """
     print("Evaluating Started")
+
+    model.eval()
     path_test = "Data/test.labeled"
     test = DependencyDataset(words_dict, pos_dict, path_test, padding=True)
     test_data_loader = DataLoader(test, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
-
+    num_of_sentences = len(test)
     acc = 0
+    num_of_words = 0
     with torch.no_grad():
         for batch_idx, input_data in enumerate(test_data_loader):
             words_idx_tensor, pos_idx_tensor, headers_idx_tensor, sentence_length = input_data
@@ -324,8 +390,9 @@ def evaluate(model, words_dict, pos_dict, batch_size):
 
             _loss = OpTyNLLLOSS(headers_idx_tensors, batched_scores, max_length).requires_grad_(False).item()
             acc += get_acc(batched_scores, headers_idx_tensors, batch_size, max_length, sentence_length)
+            num_of_words += (max_length - 1)
 
-        acc = acc / len(test)
+    acc = acc/num_of_words
     print("Evaluating Ended")
     return acc, _loss
 
@@ -334,12 +401,13 @@ def print_plots(train_acc_list, train_loss_list, test_acc_list, test_loss_list, 
     """
     Prints two plot that describes our processes of learning through an NLLL loss function and the accuracy measure.
     Args:
-        train_acc_list:
-        train_loss_list:
-        test_acc_list:
-        test_loss_list:
-        _time:
+        train_acc_list: Contains the accuracy measure tracking through the training phase.
+        train_loss_list: Contains the loss measure tracking through the training phase.
+        test_acc_list: Contains the accuracy measure tracking through the evaluation phase.
+        test_loss_list: Contains the loss measure tracking through the evaluation phase.
+        _time: The time id to recognize the plot output.
     Returns:
+        Saves the plot in a jpeg file.
     """
 
     # sns.set_style("whitegrid")
@@ -356,18 +424,37 @@ def print_plots(train_acc_list, train_loss_list, test_acc_list, test_loss_list, 
     ax[0].set_xlabel('Num of Epochs')
     ax[0].set_ylabel('Loss')
 
-    ax[1].plot(x_train, train_acc_list, label='Train Error')
-    ax[1].plot(x_test, test_acc_list, label='Test Error')
+    ax[1].plot(x_train, train_acc_list, label='Train UAS')
+    ax[1].plot(x_test, test_acc_list, label='Test UAS')
     ax[1].legend()
-    ax[1].set_title('Error Rate')
+    ax[1].set_title('UAS')
     ax[1].set_xlabel('Num of Epochs')
-    ax[1].set_ylabel('Error Rate')
+    ax[1].set_ylabel('UAS')
     fig.savefig('plots_{}.png'.format(_time))
 
 
 class DependencyParser:
+    """
+    A dependency parser model object, includes all the hyper parameters mix and train phase of the selected model.
+    """
     def __init__(self, epochs, word_embedding_dim, pos_embedding_dim, hidden_dim, batch_size, batch_accumulate,
-                 learning_rate, path_train, path_test):
+                 learning_rate, path_train, path_test, word_tag_dropout, embedding_dropout, lstm_dropout):
+        """
+        Args:
+            epochs: The number of epochs the model is trained on.
+            word_embedding_dim: The dimension of the word embedding.
+            pos_embedding_dim: The dimension of the POS tag embedding.
+            hidden_dim: The LSTM's hidden size dimension.
+            batch_size: The batch size - the number of sentences we get out of the data loader.
+            batch_accumulate: The accumulate batch size - The practical batch size, the number of  sentences  which we learn on parallel.
+            learning_rate: The learning rate of our optimizer.
+            path_train: The path to the train file.
+            path_test: The path to the test file.
+            word_tag_dropout: The probability to dropout a complete word\ag and replace it with it's matched word\tag.
+            embedding_dropout: The MLP's neuron dropout probability.
+            lstm_dropout: The LSTM's layer dropout probability.
+
+        """
         self.epochs = epochs
         self.word_embedding_dim = word_embedding_dim
         self.pos_embedding_dim = pos_embedding_dim
@@ -377,51 +464,70 @@ class DependencyParser:
         self.learning_rate = learning_rate
         self.path_train = path_train
         self.path_test = path_test
+        self.word_tag_dropout = word_tag_dropout
+        self.embedding_dropout = embedding_dropout
+        self.lstm_dropout = lstm_dropout
+
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def train(self):
+        """ Runs the training phase of our model.
+            Returns an accuracy tracking on a validation set and a unique ID to identify this run.
+        """
 
         start_time = timer()
         torch.cuda.empty_cache()
 
         paths_list = [self.path_train]
 
-        # Preparing the dataset
+        # Prepares the dataset.
         words_dict, pos_dict = get_vocabs(paths_list)  # Gets all known vocabularies.
         train = DependencyDataset(words_dict, pos_dict, self.path_train, padding=True)
         train_data_loader = DataLoader(train, batch_size=self.batch_size, shuffle=True, num_workers=0)
         word_vocab_size = len(words_dict)
         pos_vocab_size = len(pos_dict)
 
-        encoder = LSTMEncoder(self.word_embedding_dim, self.pos_embedding_dim, self.hidden_dim, word_vocab_size, pos_vocab_size)
+        # Initialize an instance of our encoder with the chosen hyper parameters.
+        encoder = LSTMEncoder(self.word_embedding_dim, self.pos_embedding_dim, self.hidden_dim, word_vocab_size,
+                              pos_vocab_size, self.word_tag_dropout, self.embedding_dropout, self.lstm_dropout)
 
         if torch.cuda.is_available():
             encoder.cuda()
 
+        # Initialize the chosen optimizer.
         optimizer = optim.Adam(encoder.parameters(), betas=(0.9, 0.9), lr=self.learning_rate, weight_decay=1e-5)
 
         # Training start
         print("Training Started")
+
+        # To keep track of the loss and accuracy values.
         train_acc_list = []
         train_loss_list = []
         test_acc_list = []
         test_loss_list = []
 
         for epoch in range(self.epochs):
-            acc = 0  # to keep track of accuracy
-            printable_loss = 0  # To keep track of the loss value
-            i = 0
+
+            acc = 0
+            printable_loss = 0
+            i = 0 # counts the number batches we run through ( = num of sentences for batch size 1)
+            num_of_words = 0
+
             for input_data in tqdm(train_data_loader):
                 i += 1
 
+                encoder.train()
+
                 words_idx_tensor, pos_idx_tensor, headers_idx_tensor, sentence_length = input_data
+
+                # In case we use batches (>1 sentences) we need to cut the padding out of the gold headers.
                 headers_idx_tensors = [headers[:sentence_length[i]] for i, headers in enumerate(headers_idx_tensor)]
                 max_length = max(sentence_length)
 
-                batched_weights = encoder(words_idx_tensor, pos_idx_tensor, max_length, sentence_length)
+                # Feeding our model with the current batch.
+                batched_weights = encoder(words_idx_tensor, pos_idx_tensor, max_length)
 
                 loss = OpTyNLLLOSS(headers_idx_tensors, batched_weights, max_length)
-
                 loss.backward()
 
                 if i % self.batch_accumulate == 0:
@@ -431,44 +537,52 @@ class DependencyParser:
                 printable_loss += loss.item()
 
                 acc += get_acc(batched_weights, headers_idx_tensors, self.batch_size, max_length, sentence_length)
+                num_of_words += (max_length - 1)  # We don't count the root as we don't count it in the accuracy.
 
+            # Adds up the new tracking measures.
             printable_loss = printable_loss / len(train)
-            acc = acc / len(train)
+            acc = acc / num_of_words
             train_acc_list.append(float(acc))
             train_loss_list.append(float(printable_loss))
+            # Runs a validation phase.
             test_acc, test_loss = evaluate(encoder, words_dict, pos_dict, self.batch_size)
             test_acc_list.append(test_acc)
             test_loss_list.append(test_loss)
-            e_interval = i
-            print("Epoch {} Completed,\tLoss {}\tAccuracy: {}\t Test Accuracy: {}".format(epoch + 1,
-                                                                                          np.mean(
-                                                                                              train_loss_list[-e_interval:]),
-                                                                                          np.mean(
-                                                                                              train_acc_list[
-                                                                                              -e_interval:]),
-                                                                                          test_acc))
+            print("Epoch {} Completed,\tLoss {}\tAccuracy: {}\t Test Accuracy: {}".format(epoch + 1, train_loss_list[-1],
+                                                                                          train_acc_list[-1], test_acc))
 
+        # Saves our learned model and plot some graphs.
         time_id = datetime.now().strftime("%m_%d_%Y_%H_%M_%S")
         print_plots(train_acc_list, train_loss_list, test_acc_list, test_loss_list, time_id)
         end_time = timer()
-        torch.save(encoder.state_dict(), 'encoder{}.pkl '.format(time_id))
+        torch.save(encoder, 'encoder{}.pth'.format(time_id))
         print("the training took: {} sec ".format(round(end_time - start_time, 2)))
+        return test_acc_list, time_id
 
 
 if __name__ == '__main__':
 
-    EPOCHS = 200
-    WORD_EMBEDDING_DIM = 200
-    POS_EMBEDDING_DIM = 100
-    HIDDEN_DIM = 400
-    BATCH_SIZE = 1
-    BATCH_ACCUMULATE = 20
-    LEARNING_RATE = 0.003
-    
     path_train = "Data/train.labeled"
     path_test = "Data/test.labeled"
 
-    parser = DependencyParser(EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM, BATCH_SIZE, BATCH_ACCUMULATE,
-                              LEARNING_RATE, path_train, path_test)
-    parser.train()
+    hyper_parameters_list = [(100, 100, 100, 500, 1, 30, 0.002, path_train, path_test, 0.3, 0.3, 0.3),
+                             (80, 100, 100, 400, 1, 30, 0.002, path_train, path_test, 0.5, 0.3, 0.1),
+                             (80, 100, 100, 400, 1, 40, 0.005, path_train, path_test, 0.3, 0.3, 0.3),
+                             (60, 100, 200, 400, 1, 20, 0.002, path_train, path_test, 0.3, 0.3, 0.3)]
+
+    for hyper_parameters in hyper_parameters_list:
+        EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM, BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, path_train, path_test, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT = hyper_parameters
+
+        parser = DependencyParser(EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM, BATCH_SIZE, BATCH_ACCUMULATE,
+                                  LEARNING_RATE, path_train, path_test, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT)
+
+        test_acc_list, time_id = parser.train()
+        max_test_acc = round(max(test_acc_list).item(), 3)
+        epoch_max = np.argmax(test_acc_list)
+
+        # Saves our model hyper parameters settings.
+        with open('parser_results_info.csv', 'a') as f:
+            writer = csv.writer(f)
+            writer.writerow([time_id, max_test_acc, epoch_max, EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM,
+                             BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT])
 
