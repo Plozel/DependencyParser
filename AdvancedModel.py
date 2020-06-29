@@ -302,6 +302,9 @@ class LSTMEncoder(nn.Module):
         self.relu = nn.ReLU()
 
     def word_tag_dropout(self, words, postags, p_drop):
+        """
+        Dropout based on "DEEP BIAFFINE ATTENTION FOR NEURAL DEPENDENCY PARSING"
+        """
         # can't work with batches
         p_matrix_word = torch.rand(size=words.shape, device=words.device)
         p_matrix_pos = torch.rand(size=words.shape, device=words.device)
@@ -314,11 +317,12 @@ class LSTMEncoder(nn.Module):
 
     def forward(self, words_idx_tensor, pos_idx_tensor, max_length, _evaluate=False):
 
-        if not _evaluate:
-            words_idx_tensor, pos_idx_tensor = self.word_tag_dropout(words_idx_tensor, pos_idx_tensor, self._word_tag_dropout)
-
         words_embedded = self.word_embedding(words_idx_tensor[:, :max_length].to(self.device, non_blocking=True))
         tags_embedded = self.tag_embedding(pos_idx_tensor[:, :max_length].to(self.device, non_blocking=True))
+
+        if not _evaluate:
+            words_embedded, tags_embedded = self.word_tag_dropout(words_embedded, tags_embedded, self._word_tag_dropout)
+
         embeds = torch.cat([words_embedded, tags_embedded], 2)
         lstm_out, _ = self.encoder(embeds)
 
@@ -565,7 +569,7 @@ class DependencyParser:
             test_acc_list.append(test_acc)
             test_loss_list.append(test_loss)
             time_id = datetime.now().strftime("%m_%d_%Y_%H_%M_%S")
-            torch.save(encoder, 'encoder{}.pth'.format(time_id))
+            torch.save(encoder, 'encoder_per_epoch{}.pth'.format(time_id))
 
             print("Epoch {} Completed,\tLoss {}\tAccuracy: {}\t Test Accuracy: {}".format(epoch + 1, train_loss_list[-1],
                                                                                           train_acc_list[-1], test_acc))
@@ -581,7 +585,7 @@ class DependencyParser:
 
 if __name__ == '__main__':
 
-    hyper_parameters_list = [(85, 100, 100, 500, 1, 30, 0.002, "Data/combined_full.labeled", "Data/val1.labeled", 0.3, 0.3, 0.3)]
+    hyper_parameters_list = [(100, 100, 100, 500, 1, 30, 0.002, "Data/combined_full.labeled", "Data/val1.labeled", 0.3, 0.3, 0.3)]
 
     for hyper_parameters in hyper_parameters_list:
         EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM, BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, path_train, path_test, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT = hyper_parameters

@@ -524,7 +524,7 @@ if __name__ == '__main__':
     path_train = "Data/train.labeled"
     path_test = "Data/test.labeled"
 
-    hyper_parameters_list = [(30, 100, 25, 125, 10, 1, 0.005, path_train, path_test, 0)]
+    hyper_parameters_list = [(30, 100, 25, 125, 10, 1, 0.001, path_train, path_test, 0)]
 
     for hyper_parameters in hyper_parameters_list:
         EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM, BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, path_train, path_test, WORD_TAG_DROPOUT= hyper_parameters
