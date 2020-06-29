@@ -7,21 +7,19 @@ from AdvancedModel import LSTMEncoder
 torch.manual_seed(0)
 
 
-def generate_comp_tagged_file(model_path, target_path):
+def generate_comp_tagged_file(model_path, target_path, path_comp):
     """
     Generates a tagged version of the competition file.
     Args:
         model_path (str): The path to the chosen model's pth file.
         target_path (str): The path for the tagged version's file.
-
     """
     torch.manual_seed(0)
+    words_dict, pos_dict = AdvancedModel.get_vocabs(trained_on_path_list)
+    comp = AdvancedModel.DependencyDataset(words_dict, pos_dict, path_comp, padding=True, competition=True)
+    comp_data_loader = AdvancedModel.DataLoader(comp, batch_size=1, shuffle=False, num_workers=0)
+
     with torch.no_grad():
-
-        words_dict, pos_dict = AdvancedModel.get_vocabs(trained_on_path_list)
-        comp = AdvancedModel.DependencyDataset(words_dict, pos_dict, path_comp, padding=True, competition=True)
-        comp_data_loader = AdvancedModel.DataLoader(comp, batch_size=1, shuffle=False, num_workers=0)
-
         model = torch.load(model_path)
 
         if torch.cuda.is_available():
@@ -41,6 +39,9 @@ def generate_comp_tagged_file(model_path, target_path):
 
         current_tree_idx = 0
         current_word_idx = 1
+
+        # with open(target_path, 'w') as f_labeled:
+        #     pass
 
         with open(path_comp, 'r') as f_unlabeled:
             with open(target_path, 'w') as f_labeled:
@@ -71,12 +72,26 @@ if __name__ == '__main__':
     trained_on_path_list = [path_train, path_test]
     path_comp_m1_labeled = 'comp_m1_203933551.labeled'
     path_comp_m2_labeled = 'comp_m2_203933551.labeled'
-    basic_model_path = 'encoder06_27_2020_03_46_19.pth'
-    advanced_model_path = 'encoder06_27_2020_03_46_19.pth'
+    basic_model_path = 'encoder06_29_2020_19_19_58.pth'
+    advanced_model_path = 'encoder06_30_2020_01_22_43.pth'
 
-    # generate_comp_tagged_file(basic_model_path, path_comp_m1_labeled)
-    generate_comp_tagged_file(advanced_model_path, path_comp_m2_labeled)
+    # generate_comp_tagged_file(basic_model_path, path_comp_m1_labeled, path_comp)
+    generate_comp_tagged_file(advanced_model_path, path_comp_m2_labeled, path_comp)
 
     print("Evaluate end")
 
-
+    # count = 0
+    # count_words = 0
+    # with open(path_comp_m2_labeled, 'r') as f1:
+    #     with open(path_test, 'r') as f2:
+    #         for line1, line2 in zip(f1, f2):
+    #             split_line1 = line1.split('\t')
+    #             split_line2 = line2.split('\t')
+    #
+    #             if len(split_line1) == 1:  # the end of a sentence denotes by \n line.
+    #                 continue
+    #             if split_line2[6] == split_line1[6]:
+    #                 count = count+1
+    #             count_words += 1
+    #
+    # print(count/count_words)

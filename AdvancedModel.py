@@ -13,6 +13,8 @@ from datetime import datetime
 from tqdm import tqdm
 from timeit import default_timer as timer
 import csv
+from _collections import defaultdict
+import math
 
 torch.manual_seed(0)
 
@@ -54,9 +56,13 @@ def get_vocabs(list_of_paths):
     Returns:
          A POS and words indexes dictionaries.
     """
+    words_dict = defaultdict()
+    pos_dict = defaultdict()
+    init_dict = [(PAD_TOKEN, math.inf), (ROOT_TOKEN, math.inf), (UNKNOWN_TOKEN, math.inf)]
+    for k, v in init_dict:
+        words_dict[k] = v
+        pos_dict[k] = v
 
-    words_dict = {PAD_TOKEN, ROOT_TOKEN, UNKNOWN_TOKEN}
-    pos_dict = {PAD_TOKEN, ROOT_TOKEN, UNKNOWN_TOKEN}
     for file_path in list_of_paths:
         with open(file_path) as f:
             for line in f:
@@ -64,8 +70,15 @@ def get_vocabs(list_of_paths):
                 if len(split_line) == 1:  # the end of a sentence denotes by \n line.
                     continue
                 word, pos_tag, head = split_line[1], split_line[3], int(split_line[6])
-                words_dict.add(word)
-                pos_dict.add(pos_tag)
+                if word in words_dict:
+                    words_dict[word] += 1
+                else:
+                    words_dict[word] = 1
+
+                if pos_tag in pos_dict:
+                    pos_dict[pos_tag] += 1
+                else:
+                    pos_dict[pos_tag] = 1
 
     return words_dict, pos_dict
 
@@ -484,6 +497,7 @@ class DependencyParser:
 
         # Prepares the dataset.
         words_dict, pos_dict = get_vocabs(paths_list)  # Gets all known vocabularies.
+
         train = DependencyDataset(words_dict, pos_dict, self.path_train, padding=True)
         train_data_loader = DataLoader(train, batch_size=self.batch_size, shuffle=True, num_workers=0)
         word_vocab_size = len(words_dict)
@@ -550,6 +564,9 @@ class DependencyParser:
             test_acc, test_loss = evaluate(encoder, words_dict, pos_dict, self.batch_size, self.path_test)
             test_acc_list.append(test_acc)
             test_loss_list.append(test_loss)
+            time_id = datetime.now().strftime("%m_%d_%Y_%H_%M_%S")
+            torch.save(encoder, 'encoder{}.pth'.format(time_id))
+
             print("Epoch {} Completed,\tLoss {}\tAccuracy: {}\t Test Accuracy: {}".format(epoch + 1, train_loss_list[-1],
                                                                                           train_acc_list[-1], test_acc))
 
@@ -564,12 +581,7 @@ class DependencyParser:
 
 if __name__ == '__main__':
 
-    # path_train = "Data/combined_full.labeled"
-    # path_test = "Data/val_clean.txt"
-
-    hyper_parameters_list = [(100, 100, 100, 500, 1, 30, 0.002, "Data/combined0.labeled", "Data/val0.labeled", 0.3, 0.3, 0.3),
-                             (100, 100, 100, 500, 1, 30, 0.002, "Data/combined1.labeled", "Data/val1.labeled", 0.3, 0.3, 0.3),
-                             (100, 100, 100, 500, 1, 30, 0.002, "Data/combined2.labeled", "Data/val2.labeled", 0.3, 0.3, 0.3)]
+    hyper_parameters_list = [(85, 100, 100, 500, 1, 30, 0.002, "Data/combined_full.labeled", "Data/val1.labeled", 0.3, 0.3, 0.3)]
 
     for hyper_parameters in hyper_parameters_list:
         EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM, BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, path_train, path_test, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT = hyper_parameters
