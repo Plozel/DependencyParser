@@ -13,6 +13,8 @@ from datetime import datetime
 from tqdm import tqdm
 from timeit import default_timer as timer
 import csv
+from _collections import defaultdict
+import math
 
 torch.manual_seed(0)
 
@@ -54,9 +56,13 @@ def get_vocabs(list_of_paths):
     Returns:
          A POS and words indexes dictionaries.
     """
+    words_dict = defaultdict()
+    pos_dict = defaultdict()
+    init_dict = [(PAD_TOKEN, math.inf), (ROOT_TOKEN, math.inf), (UNKNOWN_TOKEN, math.inf)]
+    for k, v in init_dict:
+        words_dict[k] = v
+        pos_dict[k] = v
 
-    words_dict = {PAD_TOKEN, ROOT_TOKEN, UNKNOWN_TOKEN}
-    pos_dict = {PAD_TOKEN, ROOT_TOKEN, UNKNOWN_TOKEN}
     for file_path in list_of_paths:
         with open(file_path) as f:
             for line in f:
@@ -64,14 +70,21 @@ def get_vocabs(list_of_paths):
                 if len(split_line) == 1:  # the end of a sentence denotes by \n line.
                     continue
                 word, pos_tag, head = split_line[1], split_line[3], int(split_line[6])
-                words_dict.add(word)
-                pos_dict.add(pos_tag)
+                if word in words_dict:
+                    words_dict[word] += 1
+                else:
+                    words_dict[word] = 1
+
+                if pos_tag in pos_dict:
+                    pos_dict[pos_tag] += 1
+                else:
+                    pos_dict[pos_tag] = 1
 
     return words_dict, pos_dict
 
 
 class DataReader:
-    """ Read the data from the requested file and hold it's components. """
+    """ Reads the data from the requested file and hold it's components. """
 
     def __init__(self, word_dict, pos_dict, file_path, competition=False):
         """
@@ -251,6 +264,7 @@ class LSTMEncoder(nn.Module):
         self._mlp_dropout = _mlp_dropout
         self._lstm_dropout = _lstm_dropout
 
+        # TODO: so ugly
         self.weight1 = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
         self.weight1.data.uniform_(-1, 1)
         self.weight2 = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
@@ -288,6 +302,9 @@ class LSTMEncoder(nn.Module):
         self.relu = nn.ReLU()
 
     def word_tag_dropout(self, words, postags, p_drop):
+        """
+        Dropout based on "DEEP BIAFFINE ATTENTION FOR NEURAL DEPENDENCY PARSING"
+        """
         # can't work with batches
         p_matrix_word = torch.rand(size=words.shape, device=words.device)
         p_matrix_pos = torch.rand(size=words.shape, device=words.device)
@@ -300,11 +317,12 @@ class LSTMEncoder(nn.Module):
 
     def forward(self, words_idx_tensor, pos_idx_tensor, max_length, _evaluate=False):
 
-        if not _evaluate:
-            words_idx_tensor, pos_idx_tensor = self.word_tag_dropout(words_idx_tensor, pos_idx_tensor, self._word_tag_dropout)
-
         words_embedded = self.word_embedding(words_idx_tensor[:, :max_length].to(self.device, non_blocking=True))
         tags_embedded = self.tag_embedding(pos_idx_tensor[:, :max_length].to(self.device, non_blocking=True))
+
+        if not _evaluate:
+            words_embedded, tags_embedded = self.word_tag_dropout(words_embedded, tags_embedded, self._word_tag_dropout)
+
         embeds = torch.cat([words_embedded, tags_embedded], 2)
         lstm_out, _ = self.encoder(embeds)
 
@@ -361,7 +379,7 @@ def get_acc(edge_scores, headers_idx_tensors, batch_size, max_length, sentence_l
     return acc
 
 
-def evaluate(model, words_dict, pos_dict, batch_size):
+def evaluate(model, words_dict, pos_dict, batch_size, path_test):
     """
     Evaluate our model on a validation set.
     Args:
@@ -369,13 +387,13 @@ def evaluate(model, words_dict, pos_dict, batch_size):
         words_dict: The word vocabulary the model trained with.
         pos_dict: The POS tag vocabulary the model trained with.
         batch_size: The number of sentences in a batch.
+        path_test: The path to the file to evaluate.
     Returns:
         The given model's loss and accuracy gained on the validation set.
     """
     print("Evaluating Started")
 
     model.eval()
-    path_test = "Data/test.labeled"
     test = DependencyDataset(words_dict, pos_dict, path_test, padding=True)
     test_data_loader = DataLoader(test, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
     num_of_sentences = len(test)
@@ -480,8 +498,10 @@ class DependencyParser:
 
         paths_list = [self.path_train]
 
+
         # Prepares the dataset.
         words_dict, pos_dict = get_vocabs(paths_list)  # Gets all known vocabularies.
+
         train = DependencyDataset(words_dict, pos_dict, self.path_train, padding=True)
         train_data_loader = DataLoader(train, batch_size=self.batch_size, shuffle=True, num_workers=0)
         word_vocab_size = len(words_dict)
@@ -545,9 +565,12 @@ class DependencyParser:
             train_acc_list.append(float(acc))
             train_loss_list.append(float(printable_loss))
             # Runs a validation phase.
-            test_acc, test_loss = evaluate(encoder, words_dict, pos_dict, self.batch_size)
+            test_acc, test_loss = evaluate(encoder, words_dict, pos_dict, self.batch_size, self.path_test)
             test_acc_list.append(test_acc)
             test_loss_list.append(test_loss)
+            time_id = datetime.now().strftime("%m_%d_%Y_%H_%M_%S")
+            torch.save(encoder, 'encoder_per_epoch{}.pth'.format(time_id))
+
             print("Epoch {} Completed,\tLoss {}\tAccuracy: {}\t Test Accuracy: {}".format(epoch + 1, train_loss_list[-1],
                                                                                           train_acc_list[-1], test_acc))
 
@@ -562,13 +585,7 @@ class DependencyParser:
 
 if __name__ == '__main__':
 
-    path_train = "Data/train.labeled"
-    path_test = "Data/test.labeled"
-
-    hyper_parameters_list = [(100, 100, 100, 500, 1, 30, 0.002, path_train, path_test, 0.3, 0.3, 0.3),
-                             (80, 100, 100, 400, 1, 30, 0.002, path_train, path_test, 0.5, 0.3, 0.1),
-                             (80, 100, 100, 400, 1, 40, 0.005, path_train, path_test, 0.3, 0.3, 0.3),
-                             (60, 100, 200, 400, 1, 20, 0.002, path_train, path_test, 0.3, 0.3, 0.3)]
+    hyper_parameters_list = [(100, 100, 100, 500, 1, 30, 0.002, "Data/combined_full.labeled", "Data/val1.labeled", 0.3, 0.3, 0.3)]
 
     for hyper_parameters in hyper_parameters_list:
         EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM, BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, path_train, path_test, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT = hyper_parameters
@@ -580,9 +597,11 @@ if __name__ == '__main__':
         max_test_acc = round(max(test_acc_list).item(), 3)
         epoch_max = np.argmax(test_acc_list)
 
-        # Saves our model hyper parameters settings.
+        # Saves our model hyper parameters settings ina csv file.
         with open('parser_results_info.csv', 'a') as f:
             writer = csv.writer(f)
             writer.writerow([time_id, max_test_acc, epoch_max, EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM,
                              BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT])
+
+        print("Finished training the model, based on the following hyper parameters mix: {}".format(hyper_parameters))
 
