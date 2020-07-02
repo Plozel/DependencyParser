@@ -6,7 +6,6 @@ import torch.optim as optim
 from torch.utils.data.dataloader import DataLoader
 from torchtext.vocab import Vocab
 from torch.utils.data.dataset import Dataset, TensorDataset
-from collections import defaultdict
 from collections import Counter, OrderedDict
 from chu_liu_edmonds import decode_mst
 import matplotlib.pyplot as plt
@@ -14,8 +13,7 @@ from datetime import datetime
 from tqdm import tqdm
 from timeit import default_timer as timer
 import csv
-import math
-import random
+
 
 torch.manual_seed(0)
 
@@ -338,7 +336,7 @@ def evaluate(model, path_test, words_dict, pos_dict, batch_size):
 
     model.eval()
     test = DependencyDataset(words_dict, pos_dict, path_test, padding=True)
-    test_data_loader = DataLoader(test, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    test_data_loader = DataLoader(test, batch_size=batch_size, shuffle=False, num_workers=0)
     num_of_sentences = len(test)
     acc = 0
     num_of_words = 0
@@ -452,7 +450,7 @@ class DependencyParser:
             encoder.cuda()
 
         # Initialize the chosen optimizer.
-        optimizer = optim.Adam(encoder.parameters(), lr=LEARNING_RATE)
+        optimizer = optim.Adam(encoder.parameters(), lr=self.learning_rate)
 
         # Training start
         print("Training Started")
@@ -491,7 +489,7 @@ class DependencyParser:
                 printable_loss += loss.item()
 
                 acc += get_acc(batched_weights, headers_idx_tensors, self.batch_size, max_length, sentence_length)
-                num_of_words += sentence_length.sum() - BATCH_SIZE  # We don't count the root as we don't count it in the accuracy.
+                num_of_words += sentence_length.sum() - self.batch_size  # We don't count the root as we don't count it in the accuracy.
 
             # Adds up the new tracking measures.
             printable_loss = printable_loss / len(train)
@@ -499,7 +497,7 @@ class DependencyParser:
             train_acc_list.append(float(acc))
             train_loss_list.append(float(printable_loss))
             # Runs a validation phase.
-            test_acc, test_loss = evaluate(encoder, path_test, words_dict, pos_dict, self.batch_size)
+            test_acc, test_loss = evaluate(encoder, self.path_test, words_dict, pos_dict, self.batch_size)
             test_acc_list.append(test_acc)
             test_loss_list.append(test_loss)
 
@@ -521,11 +519,13 @@ class DependencyParser:
 
 def get_hyper_parameters():
     """Returns the hyper parameters of the model."""
-    path_train = "Data/train.labeled"
-    path_test = "Data/test.labeled"
+    path_train = "Data/combined.labeled"
+    path_test = "Data/val.labeled"
     return (30, 100, 25, 125, 10, 1, 0.001, path_train, path_test, 0)
 
-if __name__ == '__main__':
+
+def run_basic_model():
+    torch.manual_seed(0)
 
     hyper_parameters_list = [get_hyper_parameters()]
 
@@ -546,3 +546,7 @@ if __name__ == '__main__':
                              BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, WORD_TAG_DROPOUT])
 
         print("Finished training the model, based on the following hyper parameters mix: {}".format(hyper_parameters))
+
+
+if __name__ == '__main__':
+    run_basic_model()

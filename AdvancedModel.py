@@ -13,6 +13,7 @@ from datetime import datetime
 from tqdm import tqdm
 from timeit import default_timer as timer
 import csv
+from BasicModel import run_basic_model
 
 torch.manual_seed(0)
 UNKNOWN_TOKEN = "<unk>"
@@ -556,16 +557,21 @@ class DependencyParser:
             test_acc_list.append(test_acc)
             test_loss_list.append(test_loss)
             time_id = datetime.now().strftime("%m_%d_%Y_%H_%M_%S")
-            with open(r"{}_advanced_model_{}.pkl".format(epoch, time_id), "wb") as output_file:
+            with open(r"{}_advanced_model_full_{}.pkl".format(epoch, time_id), "wb") as output_file:
                 torch.save(encoder.state_dict(), output_file)
             print("Epoch {} Completed,\tLoss {}\tAccuracy: {}\t Test Accuracy: {}".format(epoch + 1, train_loss_list[-1],
                                                                                           train_acc_list[-1], test_acc))
+
+            # Saves our model results.
+            with open('parser_results_info.csv', 'a') as f:
+                writer = csv.writer(f)
+                writer.writerow([epoch + 1, train_loss_list[-1], train_acc_list[-1], test_acc])
 
         # Saves our learned model and plot some graphs.
         time_id = datetime.now().strftime("%m_%d_%Y_%H_%M_%S")
         print_plots(train_acc_list, train_loss_list, test_acc_list, test_loss_list, time_id)
         end_time = timer()
-        with open(r"advanced_model_{}.pkl".format(time_id), "wb") as output_file:
+        with open(r"advanced_model_full_{}.pkl".format(time_id), "wb") as output_file:
             torch.save(encoder.state_dict(), output_file)
         print("the training took: {} sec ".format(round(end_time - start_time, 2)))
         return test_acc_list, time_id
@@ -573,9 +579,9 @@ class DependencyParser:
 
 def get_hyper_parameters():
     """Returns the hyper parameters of the model."""
-    path_train = "Data/train.labeled"
-    path_test = "Data/test.labeled"
-    return (10, 100, 100, 500, 1, 30, 0.002, path_train, path_test, 0.3, 0.3, 0.3)
+    path_train = "Data/combined.labeled"
+    path_test = "Data/val.labeled"
+    return (100, 100, 100, 500, 1, 30, 0.002, path_train, path_test, 0.3, 0.3, 0.3)
 
 
 if __name__ == '__main__':
@@ -593,9 +599,12 @@ if __name__ == '__main__':
         epoch_max = np.argmax(test_acc_list)
 
         # Saves our model hyper parameters settings.
-        with open('parser_results_info.csv', 'a') as f:
+        with open('parser_settings.csv', 'a') as f:
             writer = csv.writer(f)
             writer.writerow([time_id, max_test_acc, epoch_max, EPOCHS, WORD_EMBEDDING_DIM, POS_EMBEDDING_DIM, HIDDEN_DIM,
                              BATCH_SIZE, BATCH_ACCUMULATE, LEARNING_RATE, WORD_TAG_DROPOUT, EMBEDDING_DROPOUT, LSTM_DROPOUT])
 
     print("Finished training the model, based on the following hyper parameters mix: {}".format(hyper_parameters))
+
+    # print("Runs the basic model training:")
+    # run_basic_model()

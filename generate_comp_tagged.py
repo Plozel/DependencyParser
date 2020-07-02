@@ -82,12 +82,13 @@ if __name__ == '__main__':
 
     path_train = "Data/train.labeled"
     path_test = "Data/test.labeled"
-    path_comp = "Data/test.labeled"
-    trained_on_path_list = [path_train]
+    path_combined = "Data/combined.labeled"
+    path_comp = "Data/comp.unlabeled"
+    trained_on_path_list = [path_combined]
     path_comp_m1_labeled = 'comp_m1_203933551.labeled'
     path_comp_m2_labeled = 'comp_m2_203933551.labeled'
-    basic_model_path = '2_basic_model_07_01_2020_01_25_11.pkl'
-    advanced_model_path = '1_advanced_model_07_01_2020_01_49_49.pkl'
+    basic_model_path = 'basic_model_full.pkl'
+    advanced_model_path = 'advanced_model_full.pkl'
 
     generate_comp_tagged_file(basic_model_path, path_comp_m1_labeled, path_comp, BasicModel)
     generate_comp_tagged_file(advanced_model_path, path_comp_m2_labeled, path_comp, AdvancedModel)
