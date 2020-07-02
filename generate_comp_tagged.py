@@ -85,8 +85,8 @@ if __name__ == '__main__':
     path_combined = "Data/combined.labeled"
     path_comp = "Data/comp.unlabeled"
     trained_on_path_list = [path_combined]
-    path_comp_m1_labeled = 'comp_m1_203933551.labeled'
-    path_comp_m2_labeled = 'comp_m2_203933551.labeled'
+    path_comp_m1_labeled = 'comp_m1.labeled'
+    path_comp_m2_labeled = 'comp_m2.labeled'
     basic_model_path = 'basic_model_full.pkl'
     advanced_model_path = 'advanced_model_full.pkl'
 
